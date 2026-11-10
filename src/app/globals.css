@@ -1,0 +1,80 @@
+/* src/app/globals.css */
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter Variable", "Noto Sans Bengali Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-bangla: "Noto Sans Bengali Variable", "Inter Variable", ui-sans-serif, sans-serif;
+
+  /* Ink: text, primary buttons, sidebar */
+  --color-ink-50: #f4f5f9;
+  --color-ink-100: #e7e9f1;
+  --color-ink-200: #cfd3e2;
+  --color-ink-300: #a9b0c8;
+  --color-ink-400: #7c86a6;
+  --color-ink-500: #5a6488;
+  --color-ink-600: #444d6e;
+  --color-ink-700: #333a57;
+  --color-ink-800: #222842;
+  --color-ink-900: #151a30;
+  --color-ink-950: #0c1022;
+
+  /* Brand: one accent for the main action and active states */
+  --color-brand-50: #eef3ff;
+  --color-brand-100: #dbe5ff;
+  --color-brand-200: #bccdff;
+  --color-brand-300: #8eaaff;
+  --color-brand-400: #5f80fb;
+  --color-brand-500: #3b5cf0;
+  --color-brand-600: #2c46d6;
+  --color-brand-700: #2538ad;
+  --color-brand-800: #233389;
+
+  --color-paper: #f5f6f9;
+  --color-surface: #ffffff;
+  --color-line: #e3e6ee;
+  --color-line-strong: #cdd2de;
+  --color-muted: #5b6382;
+  --color-subtle: #8a91aa;
+
+  --color-success: #15803d;
+  --color-success-50: #ecfdf3;
+  --color-warn: #b45309;
+  --color-warn-50: #fff8eb;
+  --color-danger: #c62828;
+  --color-danger-50: #fef2f2;
+
+  --radius-card: 14px;
+  --shadow-lift: 0 1px 2px rgb(16 24 40 / 0.05), 0 1px 3px rgb(16 24 40 / 0.06);
+  --shadow-float: 0 12px 32px -8px rgb(16 24 40 / 0.18);
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink-900);
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Checkerboard behind transparent images */
+.checker {
+  background-color: #fff;
+  background-image:
+    linear-gradient(45deg, #eceef3 25%, transparent 25%), linear-gradient(-45deg, #eceef3 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #eceef3 75%), linear-gradient(-45deg, transparent 75%, #eceef3 75%);
+  background-size: 16px 16px;
+  background-position:
+    0 0,
+    0 8px,
+    8px -8px,
+    -8px 0;
+}
+
+input[type="range"] {
+  accent-color: var(--color-brand-500);
+}

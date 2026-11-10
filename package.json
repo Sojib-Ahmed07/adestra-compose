@@ -1,0 +1,55 @@
+{
+  "name": "shop-tools",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "vendor": "node scripts/copy-vendor.mjs",
+    "postinstall": "node scripts/copy-vendor.mjs",
+    "predev": "node scripts/copy-vendor.mjs",
+    "prebuild": "node scripts/copy-vendor.mjs",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "format": "prettier --write .",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio",
+    "user:add": "tsx src/db/add-user.js"
+  },
+  "dependencies": {
+    "@dloizides/background-removal": "0.3.0",
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/noto-sans-bengali": "^5.3.0",
+    "@mediapipe/face_mesh": "0.4.1633559619",
+    "@neslinesli93/qpdf-wasm": "^0.3.1",
+    "@tesseract.js-data/ben": "1.0.0",
+    "@tesseract.js-data/eng": "1.0.0",
+    "avro-phonetic": "1.1.5",
+    "better-auth": "^1.7.18",
+    "bijoy-unicode-converter": "0.1.2",
+    "bijoy2unicode": "1.0.2",
+    "drizzle-orm": "^0.45.4",
+    "fflate": "^0.8.3",
+    "lucide-react": "^1.70.0",
+    "next": "16.4.4",
+    "onnxruntime-web": "1.31.1",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.5.438",
+    "pg": "^8.23.1",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "server-only": "^0.0.1",
+    "tesseract.js": "7.0.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@next/env": "16.4.4",
+    "@tailwindcss/postcss": "4.3.4",
+    "drizzle-kit": "^0.31.11",
+    "prettier": "^3.9.10",
+    "tailwindcss": "4.3.4",
+    "tsx": "^4.23.15"
+  },
+  "engines": {
+    "node": ">=20.9"
+  }
+}
