@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Plus, UserPlus, X } from "lucide-react";
 import { renderPortrait } from "@/lib/photo/ai/look";
 import { headSizes, passportEdit } from "@/lib/photo/ai/portrait";
+import { beautyPresets } from "@/lib/photo/ai/retouch";
 import { defaultEdit, renderEdit } from "@/lib/photo/image";
 import { getPhotoSize, photoSizes } from "@/lib/photo/sizes";
 import { useStoredState } from "@/lib/use-stored";
@@ -26,13 +27,20 @@ const DEFAULTS = {
   bg: "#ffffff",
   head: "normal",
   fix: true,
+  beauty: "natural",
 };
 
 /** One-tap orders that studios print most often. */
 const presets = [
   { label: "4 passport", order: [{ sizeId: "passport", copies: 4 }] },
   { label: "8 passport", order: [{ sizeId: "passport", copies: 8 }] },
-  { label: "4 passport + 4 stamp", order: [{ sizeId: "passport", copies: 4 }, { sizeId: "stamp", copies: 4 }] },
+  {
+    label: "4 passport + 4 stamp",
+    order: [
+      { sizeId: "passport", copies: 4 },
+      { sizeId: "stamp", copies: 4 },
+    ],
+  },
   { label: "8 stamp", order: [{ sizeId: "stamp", copies: 8 }] },
   { label: "4 e-passport / visa", order: [{ sizeId: "e-passport", copies: 4 }] },
   { label: "2 square visa", order: [{ sizeId: "us-visa", copies: 2 }] },
@@ -46,13 +54,13 @@ const validSettings = (s) =>
   typeof s.bg === "string" &&
   s.head in headSizes &&
   typeof s.fix === "boolean" &&
+  (s.beauty === undefined || s.beauty in beautyPresets) &&
   Number.isFinite(s.custom?.w) &&
   Number.isFinite(s.custom?.h);
 
-
 export function AutoPassportTool() {
   const [settings, setSettings] = useStoredState("auto-passport:settings", DEFAULTS, validSettings);
-  const { people, addFiles, update, updateAll, remove: removePerson, clear, working } = usePortraits();
+  const { people, addFiles, update, lookToAll, remove: removePerson, clear, working } = usePortraits();
   const [adjust, setAdjust] = useState(null); // { id } — the photo open in the editor
   const set = (patch) => setSettings((s) => ({ ...s, ...patch }));
   const remove = (id) => {
@@ -84,6 +92,7 @@ export function AutoPassportTool() {
     return { w: s.w, h: s.h, label: s.label };
   };
   const head = headSizes[settings.head];
+  const baseLook = beautyPresets[settings.beauty ?? "natural"].look;
   const bgOf = (p) => p.bg ?? settings.bg;
   const fillOf = (p) => (bgOf(p) === KEEP ? "#ffffff" : bgOf(p));
 
@@ -91,18 +100,18 @@ export function AutoPassportTool() {
   const sourceOf = (p, preview = false) =>
     p.portrait
       ? renderPortrait(p.portrait, {
-          keepBackground: bgOf(p) === KEEP,
-          fix: p.fix ?? settings.fix,
-          look: p.look,
-          strokes: p.strokes,
-          strokesRev: p.strokesRev,
-          preview,
-        })
+        keepBackground: bgOf(p) === KEEP,
+        fix: p.fix ?? settings.fix,
+        look: { ...baseLook, ...p.look },
+        strokes: p.strokes,
+        strokesRev: p.strokesRev,
+        preview,
+      })
       : p.image.img;
   const editOf = (p, w, h) => p.edits[`${w}x${h}`] ?? (p.portrait ? passportEdit(p.portrait, w, h, head) : defaultEdit);
   const fitOf = (p) => (p.portrait ? "contain" : "cover");
   const looksKey = (p) =>
-    JSON.stringify([p.look, p.bg, p.fix, p.strokesRev, p.manual, settings.bg, settings.fix, settings.head]);
+    JSON.stringify([p.look, p.bg, p.fix, p.strokesRev, p.manual, settings.bg, settings.fix, settings.head, settings.beauty]);
 
   const ready = people.filter((p) => p.status === "done" || p.manual);
 
@@ -236,6 +245,14 @@ export function AutoPassportTool() {
                   onChange={(v) => set({ head: v })}
                 />
               </Field>
+              <Field label="Face touch-up (all photos)">
+                <Segmented
+                  size="sm"
+                  options={Object.entries(beautyPresets).map(([value, pr]) => ({ value, label: pr.label }))}
+                  value={settings.beauty ?? "natural"}
+                  onChange={(v) => set({ beauty: v })}
+                />
+              </Field>
               <Checkbox
                 className="pb-1.5"
                 label="Auto brightness and colour"
@@ -259,12 +276,12 @@ export function AutoPassportTool() {
                     preview={
                       p.status === "done" || p.manual
                         ? () => {
-                            const { w, h } = sizeOfRow(settings.order[0]);
-                            return renderEdit(sourceOf(p, true), editOf(p, w, h), 150, (150 * h) / w, {
-                              fit: fitOf(p),
-                              background: fillOf(p),
-                            });
-                          }
+                          const { w, h } = sizeOfRow(settings.order[0]);
+                          return renderEdit(sourceOf(p, true), editOf(p, w, h), 150, (150 * h) / w, {
+                            fit: fitOf(p),
+                            background: fillOf(p),
+                          });
+                        }
                         : null
                     }
                     previewKey={`${looksKey(p)}|${JSON.stringify(settings.order[0])}|${JSON.stringify(p.edits)}|${p.status}`}
@@ -304,8 +321,9 @@ export function AutoPassportTool() {
               head={head}
               globalBg={settings.bg}
               globalFix={settings.fix}
+              baseLook={baseLook}
               onChange={(patch) => update(adjusting.id, patch)}
-              onLookToAll={(look) => updateAll({ look })}
+              onLookToAll={lookToAll}
               onClose={() => setAdjust(null)}
             />
           </Card>

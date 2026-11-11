@@ -7,7 +7,7 @@
 > create or change, list any `npm install` / `db:push` / env changes, and ask for the current contents of any file you need
 > to edit that you haven't been shown. **Never guess what an existing file contains.**
 
-Last updated: **10 Nov 2026**, after the photo editor update (passport editor, centred cards, Fill the page, Ctrl+P).
+Last updated: **11 Nov 2026**, after the photo quality update (new auto colour, face touch-up, spot fix, joint photo soft join, NID page layout).
 
 ---
 
@@ -112,34 +112,60 @@ npm run format                    # Prettier (printWidth 130)
   - `image.js` also has `drawEdit(ctx, img, edit, box, fit)` — same drawing into part of an existing canvas without clearing or
     clipping (joint photos let cut-outs overlap).
   - `card.js` — `findCardCorners(img)` (colour vs table → biggest region → biggest 4-sided shape; `found:false` = whole photo
-    inset) and `warpQuad(img, corners, w, h)` (perspective flatten; turns a standing card to landscape).
+    inset), `findTwoCards(img)` (front + back in one photo: two biggest regions, or one region split in two card-shaped halves;
+    reading order) and `warpQuad(img, corners, w, h)` (perspective flatten; turns a standing card to landscape).
+  - `enhance.js` — `enhanceScan(canvas, { level: off|clear|extra, grey, brightness, contrast })` for card / document prints:
+    white balance from the card white, levels, a little colour, sharpening. Never changes content.
 - **Photo AI** (`src/lib/photo/ai/`, browser only, fully offline, files in `public/vendor` via copy-vendor):
   - `faces.js` — MediaPipe Face Mesh (legacy `@mediapipe/face_mesh`, loaded with a `<script>` from `/vendor/facemesh/`).
-    `findFaces(canvas)` → biggest first `{ eyeL, eyeR, top (forehead, lm 10), chin (152), nose, sideL, sideR, box }` in pixels.
+    `findFaces(canvas)` → biggest first `{ eyeL, eyeR, top (forehead, lm 10), chin (152), nose, sideL, sideR, box, pts }` in pixels
+    (`pts` = all 468 mesh points as a Float32Array x, y, …; portrait.js maps them into `face.pts` of the portrait).
     Calls are queued and `reset()` before each photo (no tracking between photos).
   - `matte.js` — MODNet portrait matting (Apache-2.0 model from `@dloizides/background-removal`, run by `onnxruntime-web`
     WASM) in a module worker `public/workers/matte.js` (committed, not vendor). `matte(canvas)` → `Uint8ClampedArray` alpha.
     Input short side 512, multiple of 32, RGB scaled to −1…1.
   - `portrait.js` — `preparePortrait(img)`: face → level the eyes (any angle) → crop 3.6 × 4.3 forehead-to-chin heights at a fixed
     face size → matte → `refineAlpha` (levels + drop blobs not touching the nose) → crown = top of hair from the mask (clamped;
-    warns when the head is cut off) → `decontaminate` (removes old background colour from hair edges) → `colourFix` (mild grey-world
-    cast, small levels stretch, gamma so the face is ~55%). Returns `{ width, height, face, warnings, variant({ keepBackground, fix }) }`
+    warns when the head is cut off) → `decontaminate` (removes old background colour from hair edges) → `analyseTone` (tone.js).
+    Returns `{ width, height, face, warnings, variant({ keepBackground, fix }) }`
     (variants cached). `passportEdit(p, fw, fh, headSizes[x])` gives an Edit for `renderEdit(..., { fit: "contain", background })`.
     `headSizes` small/normal/large = head 55/63/73% of height. `cutoutWhole(img)` = whole-photo cut-out (remove-bg tool).
     Throws `NoFaceError` → UI offers "Crop by hand". Falls back to finding the person first when the face is too small.
-    The returned portrait also has `data` = `{ W, H, src, fg, alpha, lut }` (raw pixels for the editor).
+    The returned portrait also has `data` = `{ W, H, src, fg, alpha, tone }` (raw pixels for the editor).
+  - `tone.js` — automatic light & colour (pure arrays, also runs in Node). `analyseTone(src, alpha, W, H, face|null)` →
+    `Tone { gain, lo, hi, curve, vibrance }`: white balance from the **face skin** (moves skin towards a natural skin hue,
+    gains 0.7–1.5), levels on the person (stretches dull photos up to 80%), exposure only when the face is outside 48–66%
+    brightness, done on **brightness only** (R, G, B scaled together → colours don't wash out) + soft S-curve + vibrance.
+    `toneTables(t)` (per-channel prep) + `toneCurvePixel(t, r, g, b, out)`; `applyTone(rgba, n, t|null)` → RGB floats.
+    No face → soft grey-world (remove-bg).
+  - `retouch.js` — face touch-up on RGB float arrays using `face.pts`: skin mask = face oval − eyes/brows/lips/nostrils ×
+    skin-colour likelihood (+ neck). `retouchFace(rgb, W, H, face, look)` for blemish (dark / red / odd-coloured spots →
+    filled from around), smooth (guided filter, keeps texture), even (low-frequency chroma), shine, darkCircles, eyes, teeth,
+    faceLight. **Never warps or reshapes** (ID-photo safe). Also `heal` (spot-fix brush, normalised-convolution fill + grain),
+    `denoise`, `clarity`, `blurBehind` (background blur without person bleed), `fillOutside` (fills the empty corners of a kept
+    background), `beautyPresets` off/natural/studio/strong, `retouchKeys`.
   - `look.js` — `renderPortrait(p, { keepBackground, fix, look, strokes, strokesRev, preview })`: manual edits on top of the
-    automatic result. `look` = `defaultLook` keys brightness/contrast/shadows/saturation/warmth (−100…100), smooth/sharpen/edge
-    (0…100). `strokes` = `[{ mode: "erase"|"restore", r, pts: [x,y,…] }]` in full-portrait pixels (painted onto the mask).
-    Results cached on the portrait (last 6). `preview: true` works on an ~800 px copy (fast sliders); print uses full size.
+    automatic result. `look` = `defaultLook` keys: brightness/contrast/shadows/highlights/saturation/vibrance/warmth/tint/clarity
+    (−100…100), denoise, the retouch keys, sharpen, edge, bgBlur (0…100). `enhanceLook` = the "One-tap enhance" values.
+    Order: mask (edge + erase/restore strokes) → tone → manual tables → (bgBlur: person from `fg` over blurred `src`) →
+    `fillOutside` → denoise → heal strokes → retouchFace → clarity → sharpen.
+    `strokes` = `[{ mode: "erase"|"restore"|"heal", r, pts: [x,y,…] }]` in full-portrait pixels (erase/restore paint the mask,
+    heal = spot fix). Results cached on the portrait (last 6). `preview: true` works on an ~800 px copy; print uses full size.
 - **Photo components** (`src/components/photo/`): `CropEditor` (drag/wheel/arrow keys, straighten, colour; `background` prop),
   `PhotoSlot` (upload → CropEditor), `SheetPanel` (paper settings + `SheetOutput`; `rememberKey` saves paper settings in
   localStorage, `printId` puts an id on the Print button), `SheetOutput` (preview + Print / PDF / JPG), `BgPicker` (colour
   swatches + any colour + "Keep original" = `KEEP`), `usePortraits()` (list of photos processed one at a time: statuses queued →
   face → background → colour → done | error | manual; per person `edits` keyed by size, `look`, `strokes`/`strokesRev`, own `bg`,
-  own `fix`, own `copies` per order row), `PersonCard`, `PassportEditor` (tabs Position · Light & colour · Touch-up · Background;
-  sliders keep a local copy and commit after 250 ms; brush maps screen → portrait with the inverse of `drawEdit`), `CardSlot` (card photo → auto
-  corners → flatten; corner editor with 4 draggable dots; value has the same shape as PhotoSlot's).
+  own `fix`, own `copies` per order row), `PersonCard`, `PassportEditor` (tabs Position · Light & colour · Face touch-up · Background;
+  props `baseLook` (tool-wide touch-up level; the photo's own `look` holds only what was changed on top), `allowOwnBg`,
+  `showCopies`; sliders keep a local copy and commit after 250 ms; brush maps screen → portrait with the inverse of `drawEdit`;
+  Face tab = zoomed on the face (`zoomToFace`) with the spot-fix brush and hold-to-compare; used by auto passport **and** joint
+  photo), `CardSlot` (card photo → auto corners → flatten; corner editor with 4 draggable dots; value =
+  `{ image, edit, src: { photo, corners, found } }`; `cardValue(photo, corners, aspect)` builds one from outside),
+  `CardPageLayout` (card-page.jsx: paper, card size 40–260 % + Real size / Fill half page / Fill page width, front & back
+  one above other / side by side / back on next page mirrored for two-sided printing, middle / top / top-left, sets per page +
+  Fill the page, gap, cutting lines; live page with **drag to move (snaps to the page middle), corner handle to resize,
+  arrow keys**; prints through `SheetOutput hidePreview`). `usePortraits` also has `lookToAll(part)`.
   Build `items` with `useMemo` so previews only redraw on real changes.
 - **`useStoredState(key, initial, check)`** (`src/lib/use-stored.js`) — useState remembered in localStorage (tool settings).
 - **PDF engine** (`src/lib/pdf/`, browser only):
@@ -247,7 +273,8 @@ src/
     ui/        button, form ("use client"), misc, interactive ("use client"), file-drop ("use client"), sortable.js
     shell/     app-shell (sidebar + mobile menu), tool-hub, tool-icon, login-form
     settings/  settings-view
-    photo/     crop-editor, photo-slot, sheet-panel, sheet-output, bg-picker, use-portraits.js, person-card, card-slot
+    photo/     crop-editor, photo-slot, sheet-panel, sheet-output, bg-picker, use-portraits.js, person-card, card-slot,
+               card-page, passport-editor
     pdf/       pdf-bits (PdfPicker, usePdfjsDoc, useRenderDocs, PageThumb, ResultFiles, useJob)
     accounts/  bits (MoneyInput, PartyPicker, useQueryState, RangePicker, Pager, Stat), sale-form (+ partyPayload),
                expense-form, entry-table, entry-filters, void-button, party-forms (PartyFormButton, PaymentForm,
@@ -255,7 +282,7 @@ src/
     print/     paper (Paper, ShopHeading, receiptSizes), print-bar, print-button
     tools/     one client component per tool (same names as the slugs)
   lib/         tools.js (registry: groups + tools), utils.js, age.js, number-words.js, zip.js, clipboard.js, accounts.js,
-               use-stored.js, photo/ (sizes, image, sheet, export, signature, card, ai/ (faces, matte, portrait)), pdf/ (engine, ops, images, raster, stamp),
+               use-stored.js, photo/ (sizes, image, sheet, export, signature, card, enhance, ai/ (faces, matte, portrait, tone, retouch, look)), pdf/ (engine, ops, images, raster, stamp),
                bangla/ (convert, avro, ocr)
   db/          schema.js, index.js, url.js, add-user.js (`npm run user:add`)
   server/      auth.js, session.js (getCurrentUser, requireUser, requireOwner, getOwner, safeNext), errors.js,
@@ -329,6 +356,7 @@ Schema change → edit `schema.js`, tell the owner to run `npm run db:push`, upd
 
 | Date | Change | Next |
 | --- | --- | --- |
+| 2026-11-11 | **Photo quality update.** New automatic colour (white balance from the face skin, dull photos stretched, exposure on brightness only so colours stay rich). **Face touch-up** (Off / Natural / Studio / Strong for all photos + per-photo sliders: remove spots, smooth skin, even colour, shine, under-eye, eyes, teeth, face light) and a **spot-fix brush** (zoomed on the face); never reshapes the face. Light tab: One-tap enhance, highlights, clarity, vibrance, tint, reduce grain. Background: blur the kept background, empty corners filled. **Joint photo**: full editor per person (position, light, touch-up, brush), keep own backgrounds with **soft join + blur in the middle** (people stay sharp), blur backgrounds, closeness 55–115 %, 4R size. **NID**: page layout with drag / resize / snap to middle, any size 40–260 %, fill half page / width, sets per page + Fill the page, back on next page (two-sided), both sides from one photo (+ swap), Clearer / Extra clear print, brightness/contrast. No new packages, no DB change. | Batch 5 when the owner sends his templates; photo-sheet (manual crop) could get the same auto colour |
 | 2026-11-10 | **Photo editor update.** Auto passport: full **Edit** panel per photo — Position (drag/zoom/straighten, head smaller/bigger, back to automatic, copies of this photo), Light & colour (auto fix on/off, brightness, contrast, lighten shadows, colour, warm/cool, hold to compare, use on all photos), Touch-up (smooth skin on the face only, sharpen), Background (own colour per photo, tighter edges, erase / bring-back brush with undo). One-tap order chips (4 passport, 4 passport + 4 stamp…), "Next customer" button, click a thumbnail to edit. All sheets: **Place on the page** (top left / top centre / middle), **Fill the page** (adds the copies that still fit), **Ctrl+P** prints the photos. NID: front and back in the middle of the page by default, one above the other, "Clearer print", settings remembered. No new packages, no DB change. | Batch 5 when the owner sends his templates |
 | 2026-11-10 | **Photo batch (AI photo, offline).** New **Auto passport photo**: drop photos → face found, eyes levelled, head sized and centred, background removed (any colour or keep), light/colour fixed → print sheet ready, Print focused; order several sizes per photo (e.g. 4 passport + 4 stamp); per-photo Adjust / Back to automatic / Crop by hand; settings and paper remembered. **Joint photo** rebuilt: 2–4 people, auto cut-out, same head size, one background, closeness slider, reorder. **NID / ID card print**: phone photo → card corners found → flattened to exact card size (corner editor, turn 180°). New **Remove background** (PNG or colour, ZIP). New packages: onnxruntime-web, @mediapipe/face_mesh, @dloizides/background-removal (MODNet model). No DB change. | Batch 5 when the owner sends his deed/CV templates |
 | 2026-11-10 | **Batch 4: shop accounts.** New sale (one-tap price list, lines, discount, paid/baki, method) with receipts (58/80 mm, A5, A4); expenses with editable types and supplier dues; sales & expenses list (dates, type, method, staff, status, search, paging); customers & suppliers with balances, history, collect/pay, money receipt, printable statement; overview (today + dues); owner reports (sales, expenses, profit, cash, baki, by service/type/method/staff/day) + CSV; price list + printable rate chart; cancel with reason instead of delete. **Schema change: run `npm run db:push`.** | Batch 5: documents & print |

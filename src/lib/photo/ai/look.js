@@ -1,26 +1,52 @@
 // src/lib/photo/ai/look.js
 // Manual editing on top of an automatic portrait (from portrait.js):
-// light and colour, skin smoothing, sharpening, tighter edges, and erase / restore brush strokes on the mask.
+// light and colour, face touch-up (retouch.js), spot-fix brush, clarity, sharpening, tighter edges,
+// background blur, and erase / restore brush strokes on the mask.
 // renderPortrait() draws the result; results are cached per portrait, and a small "preview" copy keeps sliders smooth.
 import { makeCanvas } from "../image";
+import { blurBehind, clarity, denoise, fillOutside, heal, retouchFace } from "./retouch";
+import { toneCurvePixel, toneTables } from "./tone";
 
-/** All values 0 = unchanged. brightness … warmth: −100…100; smooth, sharpen, edge: 0…100. */
+/**
+ * All values 0 = unchanged.
+ * Light & colour (−100…100): brightness, contrast, shadows, highlights, saturation, vibrance, warmth, tint, clarity;
+ * denoise 0…100 (grain from a dim room / phone camera).
+ * Face touch-up (0…100): blemish, smooth, even, shine, darkCircles, eyes, teeth, faceLight. sharpen 0…100.
+ * Background (0…100): edge (tighter mask edges), bgBlur (blur the original background when it is kept).
+ */
 export const defaultLook = Object.freeze({
   brightness: 0,
   contrast: 0,
   shadows: 0,
+  highlights: 0,
   saturation: 0,
+  vibrance: 0,
   warmth: 0,
+  tint: 0,
+  clarity: 0,
+  denoise: 0,
+  blemish: 0,
   smooth: 0,
+  even: 0,
+  shine: 0,
+  darkCircles: 0,
+  eyes: 0,
+  teeth: 0,
+  faceLight: 0,
   sharpen: 0,
   edge: 0,
+  bgBlur: 0,
 });
 
 export const isDefaultLook = (l) => !l || Object.keys(defaultLook).every((k) => !l[k]);
 
+/** One-tap "make it better" for dull phone photos (light & colour tab). */
+export const enhanceLook = Object.freeze({ clarity: 14, vibrance: 8, shadows: 12, highlights: 12, denoise: 30, sharpen: 20 });
+
 /**
- * @typedef {{ mode: "erase" | "restore", r: number, pts: number[] }} Stroke
+ * @typedef {{ mode: "erase" | "restore" | "heal", r: number, pts: number[] }} Stroke
  * r and pts (x, y, x, y, …) are in pixels of the full-size portrait.
+ * erase / restore paint on the background mask; heal is the spot-fix brush (fills from the colours around it).
  */
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
@@ -54,7 +80,7 @@ export function renderPortrait(p, opts = {}) {
 /** A ~800 px copy of the portrait's pixel data (made once). */
 function smallData(p) {
   if (p._small) return p._small;
-  const { W, H, src, fg, alpha, lut } = p.data;
+  const { W, H, src, fg, alpha, tone } = p.data;
   const scale = Math.min(1, 800 / Math.max(W, H));
   if (scale === 1) return (p._small = { ...p.data, scale: 1 });
   const w = Math.max(1, Math.round(W * scale));
@@ -105,65 +131,92 @@ function smallData(p) {
     a[i] = sA[i * 4];
     sSrc[i * 4 + 3] = sSrcA[i * 4];
   }
-  p._small = { W: w, H: h, src: sSrc, fg: sFg, alpha: a, lut, scale };
+  p._small = { W: w, H: h, src: sSrc, fg: sFg, alpha: a, tone, scale };
   return p._small;
 }
 
 function build(p, d, { keepBackground, fix, look, strokes }) {
-  const { W, H, src, fg, lut, scale } = d;
+  const { W, H, src, fg, tone, scale } = d;
   const n = W * H;
+  const maskStrokes = strokes.filter((s) => s.mode !== "heal");
+  const healStrokes = strokes.filter((s) => s.mode === "heal");
+  const blurBg = keepBackground && look.bgBlur > 0;
 
   // 1. Mask: tighter edges, then brush strokes.
   let alpha = d.alpha;
-  if (!keepBackground && (look.edge > 0 || strokes.length)) {
+  if ((!keepBackground || blurBg) && (look.edge > 0 || maskStrokes.length)) {
     alpha = new Uint8ClampedArray(d.alpha);
     if (look.edge > 0) {
       const t = (look.edge / 100) * 0.6;
       for (let i = 0; i < n; i++) alpha[i] = clamp(((alpha[i] / 255 - t) / (1 - t)) * 255, 0, 255);
     }
-    if (strokes.length) alpha = paintStrokes(alpha, W, H, strokes, scale);
+    if (maskStrokes.length) alpha = paintStrokes(alpha, W, H, maskStrokes, scale);
   }
 
-  // 2. Colour tables: auto fix, brightness, contrast, shadows, warmth.
-  const tables = [0, 1, 2].map((ch) => {
-    const t = new Float32Array(256);
-    const gain = 1 + (look.brightness / 100) * 0.45;
-    const con = 1 + look.contrast / 100;
-    const warm = (look.warmth / 100) * 22 * (ch === 0 ? 1 : ch === 2 ? -1 : 0.15);
-    for (let v = 0; v < 256; v++) {
-      let x = fix ? lut[ch][v] : v;
-      x = x * gain;
-      x = x + (look.shadows / 100) * 70 * (1 - clamp(x, 0, 255) / 255) ** 2;
-      x = (x - 128) * con + 128;
-      x = x + warm;
-      t[v] = clamp(x, 0, 255);
-    }
-    return t;
-  });
-
-  const from = keepBackground ? src : fg;
-  const rgb = new Float32Array(n * 3);
+  // 2. Colour: automatic fix (tone.js), then the manual sliders.
+  const prep = fix && tone ? toneTables(tone) : null;
+  const manual = manualTables(look);
   const sat = 1 + look.saturation / 100;
-  for (let i = 0; i < n; i++) {
-    const j = i * 4;
-    let r = tables[0][from[j]];
-    let g = tables[1][from[j + 1]];
-    let b = tables[2][from[j + 2]];
-    if (sat !== 1) {
-      const grey = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-      r = grey + (r - grey) * sat;
-      g = grey + (g - grey) * sat;
-      b = grey + (b - grey) * sat;
+  const vib = look.vibrance / 100;
+  const tmp = [0, 0, 0];
+  const colour = (px) => {
+    const rgb = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const j = i * 4;
+      let r, g, b;
+      if (prep) {
+        toneCurvePixel(tone, prep[0][px[j]], prep[1][px[j + 1]], prep[2][px[j + 2]], tmp);
+        [r, g, b] = tmp;
+      } else {
+        r = px[j];
+        g = px[j + 1];
+        b = px[j + 2];
+      }
+      r = manual[0][Math.round(r)];
+      g = manual[1][Math.round(g)];
+      b = manual[2][Math.round(b)];
+      if (sat !== 1 || vib) {
+        const grey = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        const mx = Math.max(r, g, b);
+        const s0 = mx > 0 ? (mx - Math.min(r, g, b)) / mx : 0;
+        const k = sat * (1 + vib * (1 - s0) * 1.4);
+        r = grey + (r - grey) * k;
+        g = grey + (g - grey) * k;
+        b = grey + (b - grey) * k;
+      }
+      rgb[i * 3] = clamp(r, 0, 255);
+      rgb[i * 3 + 1] = clamp(g, 0, 255);
+      rgb[i * 3 + 2] = clamp(b, 0, 255);
     }
-    rgb[i * 3] = r;
-    rgb[i * 3 + 1] = g;
-    rgb[i * 3 + 2] = b;
+    return rgb;
+  };
+
+  let rgb;
+  if (blurBg) {
+    // Person from the cleaned cut-out colours, background = the original, blurred (person kept out of the blur).
+    const person = colour(fg);
+    const back = blurBehind(colour(src), alpha, W, H, Math.max(1, (look.bgBlur / 100) * 0.012 * Math.max(W, H)), src);
+    rgb = person;
+    for (let i = 0; i < n; i++) {
+      const a = alpha[i] / 255;
+      if (a >= 1) continue;
+      rgb[i * 3] = rgb[i * 3] * a + back[i * 3] * (1 - a);
+      rgb[i * 3 + 1] = rgb[i * 3 + 1] * a + back[i * 3 + 1] * (1 - a);
+      rgb[i * 3 + 2] = rgb[i * 3 + 2] * a + back[i * 3 + 2] * (1 - a);
+    }
+  } else {
+    rgb = colour(keepBackground ? src : fg);
   }
+  // Kept background: corners that were outside the original photo get the colours next to them.
+  const filled = keepBackground && fillOutside(rgb, src, W, H);
 
-  // 3. Smooth skin inside the face, keeping edges (eyes, lips, hairline) sharp.
-  if (look.smooth > 0 && p.face) smoothSkin(rgb, W, H, p.face, scale, look.smooth / 100);
+  // 3. Grain, spot-fix brush, then the face touch-up.
+  if (look.denoise > 0) denoise(rgb, W, H, look.denoise / 100, Math.max(1, Math.round(2 * scale + 0.5)));
+  if (healStrokes.length) heal(rgb, W, H, healStrokes, scale);
+  if (p.face?.pts) retouchFace(rgb, W, H, scaledFace(p, d), look);
 
-  // 4. Sharpen (unsharp mask) — helps small prints look crisp.
+  // 4. Clarity and sharpening — help small prints look crisp.
+  if (look.clarity) clarity(rgb, W, H, look.clarity / 100, Math.max(W, H) * 0.012);
   if (look.sharpen > 0) sharpen(rgb, W, H, (look.sharpen / 100) * 1.4);
 
   const out = makeCanvas(W, H);
@@ -174,10 +227,37 @@ function build(p, d, { keepBackground, fix, look, strokes }) {
     o[i * 4] = rgb[i * 3];
     o[i * 4 + 1] = rgb[i * 3 + 1];
     o[i * 4 + 2] = rgb[i * 3 + 2];
-    o[i * 4 + 3] = keepBackground ? src[i * 4 + 3] : alpha[i];
+    o[i * 4 + 3] = filled ? 255 : keepBackground ? src[i * 4 + 3] : alpha[i];
   }
   ctx.putImageData(img, 0, 0);
   return out;
+}
+
+/** Face points in the pixels of the data being drawn (preview copies are smaller). */
+function scaledFace(p, d) {
+  if (d.scale === 1) return p.face;
+  d._face ??= { ...p.face, pts: p.face.pts.map((v) => v * d.scale) };
+  return d._face;
+}
+
+/** Per-channel tables for brightness, contrast, shadows, highlights, warm/cool and tint. */
+function manualTables(look) {
+  return [0, 1, 2].map((ch) => {
+    const t = new Float32Array(256);
+    const gain = 1 + (look.brightness / 100) * 0.45;
+    const con = 1 + look.contrast / 100;
+    const warm = (look.warmth / 100) * 22 * (ch === 0 ? 1 : ch === 2 ? -1 : 0.15);
+    const tint = (look.tint / 100) * 14 * (ch === 1 ? -1 : 0.5); // + = magenta, − = green
+    for (let v = 0; v < 256; v++) {
+      let x = v * gain;
+      x = x + (look.shadows / 100) * 70 * (1 - clamp(x, 0, 255) / 255) ** 2;
+      x = x - (look.highlights / 100) * 60 * (clamp(x, 0, 255) / 255) ** 3;
+      x = (x - 128) * con + 128;
+      x = x + warm + tint;
+      t[v] = clamp(x, 0, 255);
+    }
+    return t;
+  });
 }
 
 function paintStrokes(alpha, W, H, strokes, scale) {
@@ -240,38 +320,6 @@ function boxBlur(rgb, W, H, r, x0 = 0, y0 = 0, x1 = W, y1 = H) {
     }
   }
   return out;
-}
-
-function smoothSkin(rgb, W, H, f, scale, amount) {
-  const cx = f.cx * scale;
-  const cy = ((f.topY + f.chinY) / 2) * scale;
-  const rx = f.faceW * 0.56 * scale;
-  const ry = (f.chinY - f.topY) * 0.62 * scale;
-  const x0 = Math.max(0, Math.floor(cx - rx));
-  const x1 = Math.min(W, Math.ceil(cx + rx));
-  const y0 = Math.max(0, Math.floor(cy - ry));
-  const y1 = Math.min(H, Math.ceil(cy + ry));
-  if (x1 <= x0 || y1 <= y0) return;
-  const r = Math.max(1, Math.round(f.faceW * scale * 0.014));
-  const blur = boxBlur(boxBlur(rgb, W, H, r, x0, y0, x1, y1), W, H, r, x0, y0, x1, y1);
-  for (let y = y0; y < y1; y++) {
-    for (let x = x0; x < x1; x++) {
-      const dx = (x - cx) / rx;
-      const dy = (y - cy) / ry;
-      const d2 = dx * dx + dy * dy;
-      if (d2 >= 1) continue;
-      const fall = d2 < 0.6 ? 1 : (1 - d2) / 0.4;
-      const i = (y * W + x) * 3;
-      // Big differences = real detail (eyes, brows, lips) → leave them.
-      const diff =
-        Math.abs(rgb[i] - blur[i]) + Math.abs(rgb[i + 1] - blur[i + 1]) + Math.abs(rgb[i + 2] - blur[i + 2]);
-      const keep = Math.exp(-diff / 40);
-      const w = amount * fall * keep;
-      rgb[i] += (blur[i] - rgb[i]) * w;
-      rgb[i + 1] += (blur[i + 1] - rgb[i + 1]) * w;
-      rgb[i + 2] += (blur[i + 2] - rgb[i + 2]) * w;
-    }
-  }
 }
 
 function sharpen(rgb, W, H, amount) {

@@ -2,9 +2,10 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Brush, Eraser, Eye, RotateCcw, Undo2, Wand2 } from "lucide-react";
-import { defaultLook, renderPortrait } from "@/lib/photo/ai/look";
+import { Brush, Eraser, Eye, RotateCcw, Sparkles, Undo2, Wand2, ZoomIn } from "lucide-react";
+import { defaultLook, enhanceLook, renderPortrait } from "@/lib/photo/ai/look";
 import { passportEdit } from "@/lib/photo/ai/portrait";
+import { beautyPresets, retouchKeys } from "@/lib/photo/ai/retouch";
 import { defaultEdit, renderEdit, srcH, srcW } from "@/lib/photo/image";
 import { cn } from "@/lib/utils";
 import { BgPicker, KEEP } from "./bg-picker";
@@ -16,34 +17,73 @@ import { Segmented, Slider, Stepper } from "@/components/ui/interactive";
 const tabs = [
   { value: "position", label: "Position" },
   { value: "light", label: "Light & colour" },
-  { value: "touch", label: "Touch-up" },
+  { value: "face", label: "Face touch-up" },
   { value: "background", label: "Background" },
 ];
 
+const lightKeys = [
+  "brightness",
+  "contrast",
+  "shadows",
+  "highlights",
+  "clarity",
+  "vibrance",
+  "saturation",
+  "warmth",
+  "tint",
+  "denoise",
+  "sharpen",
+];
+const faceKeys = retouchKeys;
+
+const pick = (obj, keys) => Object.fromEntries(keys.filter((k) => k in obj).map((k) => [k, obj[k]]));
+const omit = (obj, keys) => Object.fromEntries(Object.entries(obj).filter(([k]) => !keys.includes(k)));
+
 /**
- * Full editor for one automatic passport photo.
+ * Full editor for one automatic photo (auto passport, joint photo).
  * @param {{ p: any, rows: { label: string, w: number, h: number, copies: number }[], head: { head: number, top: number },
- *   globalBg: string, globalFix: boolean, onChange: (patch: any) => void, onLookToAll: (look: any) => void,
- *   onClose: () => void }} props
+ *   globalBg: string, globalFix: boolean, baseLook?: object, allowOwnBg?: boolean, showCopies?: boolean,
+ *   onChange: (patch: any) => void, onLookToAll: (look: any) => void, onClose: () => void }} props
+ * baseLook: the tool-wide touch-up level (e.g. "Natural"); the photo's own `look` is laid on top of it.
  */
-export function PassportEditor({ p, rows, head, globalBg, globalFix, onChange, onLookToAll, onClose }) {
+export function PassportEditor({
+  p,
+  rows,
+  head,
+  globalBg,
+  globalFix,
+  baseLook = {},
+  allowOwnBg = true,
+  showCopies = true,
+  onChange,
+  onLookToAll,
+  onClose,
+}) {
   const [tab, setTab] = useState("position");
   const [rowIdx, setRowIdx] = useState(0);
   const row = rows[Math.min(rowIdx, rows.length - 1)];
   const sizeKey = `${row.w}x${row.h}`;
   const auto = Boolean(p.portrait);
+  const hasFace = Boolean(p.portrait?.face?.pts);
 
-  // Sliders move a local copy (fast preview); the photo itself is updated a moment after you stop.
-  const [look, setLook] = useState({ ...defaultLook, ...p.look });
-  useEffect(() => setLook({ ...defaultLook, ...p.look }), [p.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Sliders change a local copy (fast preview); the photo itself is updated a moment after you stop.
+  const [own, setOwn] = useState(p.look || {});
+  useEffect(() => setOwn(p.look || {}), [p.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const commit = useRef(null);
-  const changeLook = (patch) => {
-    const next = { ...look, ...patch };
-    setLook(next);
+  const changeLook = (patch, now = false) => {
+    const next = { ...own, ...patch };
+    setOwn(next);
     clearTimeout(commit.current);
-    commit.current = setTimeout(() => onChange({ look: next }), 250);
+    if (now) onChange({ look: next });
+    else commit.current = setTimeout(() => onChange({ look: next }), 250);
+  };
+  const replaceLook = (next) => {
+    clearTimeout(commit.current);
+    setOwn(next);
+    onChange({ look: next });
   };
   useEffect(() => () => clearTimeout(commit.current), []);
+  const look = useMemo(() => ({ ...defaultLook, ...baseLook, ...own }), [baseLook, own]);
 
   const bg = p.bg ?? globalBg;
   const keep = bg === KEEP;
@@ -54,13 +94,13 @@ export function PassportEditor({ p, rows, head, globalBg, globalFix, onChange, o
     () =>
       auto
         ? renderPortrait(p.portrait, {
-            keepBackground: keep,
-            fix,
-            look,
-            strokes: p.strokes,
-            strokesRev: p.strokesRev,
-            preview: true,
-          })
+          keepBackground: keep,
+          fix,
+          look,
+          strokes: p.strokes,
+          strokesRev: p.strokesRev,
+          preview: true,
+        })
         : p.image.img,
     [auto, p.portrait, p.image, keep, fix, look, p.strokes, p.strokesRev],
   );
@@ -70,6 +110,39 @@ export function PassportEditor({ p, rows, head, globalBg, globalFix, onChange, o
   const edit = p.edits[sizeKey] ?? autoEdit;
   const setEdit = (e) => onChange({ edits: { ...p.edits, [sizeKey]: e } });
   const fit = auto ? "contain" : "cover";
+
+  const [faceZoom, setFaceZoom] = useState(true);
+  const faceEdit = useMemo(
+    () => (auto && faceZoom ? zoomToFace(edit, p.portrait, row.w / row.h, 2.1) : edit),
+    [auto, faceZoom, edit, p.portrait, row.w, row.h],
+  );
+
+  const addStroke = (s) => onChange({ strokes: [...p.strokes, s], strokesRev: (p.strokesRev || 0) + 1 });
+  const undoStroke = (heal) => {
+    const i = p.strokes.findLastIndex((s) => (s.mode === "heal") === heal);
+    if (i < 0) return;
+    onChange({ strokes: p.strokes.filter((_, j) => j !== i), strokesRev: (p.strokesRev || 0) + 1 });
+  };
+  const clearStrokes = (heal) =>
+    onChange({ strokes: p.strokes.filter((s) => (s.mode === "heal") !== heal), strokesRev: (p.strokesRev || 0) + 1 });
+  const healCount = p.strokes.filter((s) => s.mode === "heal").length;
+  const maskCount = p.strokes.length - healCount;
+
+  const slider = (key, label, min, max) => (
+    <Slider
+      key={key}
+      label={label}
+      value={look[key]}
+      min={min}
+      max={max}
+      defaultValue={baseLook[key] ?? 0}
+      onChange={(v) => changeLook({ [key]: v })}
+    />
+  );
+
+  const beautyNow = Object.entries(beautyPresets).find(([, pr]) =>
+    faceKeys.every((k) => (look[k] || 0) === (pr.look[k] || 0)),
+  )?.[0];
 
   return (
     <div className="space-y-4">
@@ -133,14 +206,20 @@ export function PassportEditor({ p, rows, head, globalBg, globalFix, onChange, o
                 <Button size="sm" variant="outline" onClick={() => setEdit({ ...edit, zoom: edit.zoom * 1.05 })}>
                   Head bigger
                 </Button>
+                <Button size="sm" variant="outline" onClick={() => setEdit({ ...edit, y: edit.y - 0.01 })}>
+                  Move up
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => setEdit({ ...edit, y: edit.y + 0.01 })}>
+                  Move down
+                </Button>
               </>
             ) : null}
           </div>
-          <CopiesEditor p={p} rows={rows} onChange={onChange} />
+          {showCopies ? <CopiesEditor p={p} rows={rows} onChange={onChange} /> : null}
         </div>
       ) : (
         <div className="grid gap-5 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-          <div className="min-w-0">
+          <div className="min-w-0 space-y-2">
             {tab === "background" ? (
               <BrushView
                 p={p}
@@ -148,10 +227,36 @@ export function PassportEditor({ p, rows, head, globalBg, globalFix, onChange, o
                 edit={edit}
                 aspect={row.w / row.h}
                 fill={fill}
-                disabled={keep}
-                onStroke={(s) => onChange({ strokes: [...p.strokes, s], strokesRev: (p.strokesRev || 0) + 1 })}
+                disabled={keep && !(look.bgBlur > 0)}
+                onStroke={addStroke}
                 brush={p.brush ?? { mode: "erase", size: 4 }}
               />
+            ) : tab === "face" ? (
+              <>
+                <BrushView
+                  p={p}
+                  source={source}
+                  original={original}
+                  edit={faceEdit}
+                  aspect={row.w / row.h}
+                  fill={fill}
+                  disabled={false}
+                  onStroke={addStroke}
+                  brush={{ mode: "heal", size: p.healSize ?? 2 }}
+                />
+                <div className="flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => setFaceZoom((z) => !z)}
+                    className={cn(
+                      "inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-medium",
+                      faceZoom ? "bg-brand-50 text-brand-700" : "text-ink-700 hover:bg-ink-50",
+                    )}
+                  >
+                    <ZoomIn className="h-4 w-4" /> {faceZoom ? "Zoomed on the face" : "Zoom on the face"}
+                  </button>
+                </div>
+              </>
             ) : (
               <FramePreview source={source} original={original} edit={edit} aspect={row.w / row.h} fill={fill} />
             )}
@@ -159,45 +264,101 @@ export function PassportEditor({ p, rows, head, globalBg, globalFix, onChange, o
           <div className="min-w-0 space-y-4">
             {tab === "light" ? (
               <>
-                <Checkbox
-                  label="Auto brightness and colour"
-                  checked={fix}
-                  onChange={(e) => onChange({ fix: e.target.checked })}
-                />
-                <Slider label="Brightness" value={look.brightness} min={-100} max={100} defaultValue={0} onChange={(v) => changeLook({ brightness: v })} />
-                <Slider label="Contrast" value={look.contrast} min={-60} max={80} defaultValue={0} onChange={(v) => changeLook({ contrast: v })} />
-                <Slider label="Lighten shadows" value={look.shadows} min={0} max={100} defaultValue={0} onChange={(v) => changeLook({ shadows: v })} />
-                <Slider label="Colour strength" value={look.saturation} min={-100} max={80} defaultValue={0} onChange={(v) => changeLook({ saturation: v })} />
-                <Slider label="Warm / cool" value={look.warmth} min={-100} max={100} defaultValue={0} onChange={(v) => changeLook({ warmth: v })} />
-              </>
-            ) : null}
-            {tab === "touch" ? (
-              <>
-                <Slider label="Smooth skin" value={look.smooth} min={0} max={100} defaultValue={0} onChange={(v) => changeLook({ smooth: v })} />
-                <Slider label="Sharpen" value={look.sharpen} min={0} max={100} defaultValue={0} onChange={(v) => changeLook({ sharpen: v })} />
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button size="sm" variant="accent" onClick={() => changeLook({ ...enhanceLook }, true)}>
+                    <Sparkles className="h-4 w-4" /> One-tap enhance
+                  </Button>
+                  <Checkbox
+                    label="Auto brightness and colour"
+                    checked={fix}
+                    onChange={(e) => onChange({ fix: e.target.checked })}
+                  />
+                </div>
+                <div className="grid gap-x-5 gap-y-3 sm:grid-cols-2 md:grid-cols-1 xl:grid-cols-2">
+                  {slider("brightness", "Brightness", -100, 100)}
+                  {slider("contrast", "Contrast", -60, 80)}
+                  {slider("shadows", "Lighten shadows", 0, 100)}
+                  {slider("highlights", "Recover bright parts", 0, 100)}
+                  {slider("clarity", "Clarity (crisp details)", -50, 80)}
+                  {slider("vibrance", "Vibrance (dull colours)", -50, 80)}
+                  {slider("saturation", "Colour strength", -100, 80)}
+                  {slider("warmth", "Warm / cool", -100, 100)}
+                  {slider("tint", "Green / pink", -100, 100)}
+                  {slider("denoise", "Reduce grain", 0, 100)}
+                  {slider("sharpen", "Sharpen", 0, 100)}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" onClick={() => replaceLook(omit(own, lightKeys))}>
+                    <RotateCcw className="h-4 w-4" /> Reset light & colour
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => onLookToAll(pick(look, lightKeys))}>
+                    Use on all photos
+                  </Button>
+                </div>
                 <p className="text-xs text-muted">
-                  Smooth skin works on the face only and keeps eyes, eyebrows and lips sharp. A little sharpening (20–40) makes
-                  small prints look crisp.
+                  Dull or dark phone photo? Press <strong>One-tap enhance</strong>. Click a slider's name to put it back.
                 </p>
               </>
             ) : null}
-            {tab === "light" || tab === "touch" ? (
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    const keepEdge = { ...defaultLook, edge: look.edge };
-                    setLook(keepEdge);
-                    onChange({ look: keepEdge });
-                  }}
-                >
-                  <RotateCcw className="h-4 w-4" /> Reset
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => onLookToAll(look)}>
-                  Use these settings on all photos
-                </Button>
-              </div>
+            {tab === "face" ? (
+              hasFace ? (
+                <>
+                  <Field label="Touch-up level">
+                    <Segmented
+                      size="sm"
+                      options={Object.entries(beautyPresets).map(([value, pr]) => ({ value, label: pr.label }))}
+                      value={beautyNow ?? ""}
+                      onChange={(v) =>
+                        changeLook(Object.fromEntries(faceKeys.map((k) => [k, beautyPresets[v].look[k] || 0])), true)
+                      }
+                    />
+                  </Field>
+                  <div className="grid gap-x-5 gap-y-3 sm:grid-cols-2 md:grid-cols-1 xl:grid-cols-2">
+                    {slider("blemish", "Remove spots & marks", 0, 100)}
+                    {slider("smooth", "Smooth skin", 0, 100)}
+                    {slider("even", "Even skin colour", 0, 100)}
+                    {slider("shine", "Reduce oily shine", 0, 100)}
+                    {slider("darkCircles", "Under-eye shadows", 0, 100)}
+                    {slider("eyes", "Brighter eyes", 0, 100)}
+                    {slider("teeth", "Whiter teeth", 0, 100)}
+                    {slider("faceLight", "Light on the face", 0, 100)}
+                  </div>
+                  <div className="space-y-2 rounded-lg bg-ink-50/60 p-3">
+                    <p className="text-xs font-medium text-ink-700">Spot fix — tap or paint on a spot, mark or stray hair</p>
+                    <Slider
+                      label="Brush size"
+                      value={p.healSize ?? 2}
+                      min={0.5}
+                      max={8}
+                      step={0.5}
+                      defaultValue={2}
+                      onChange={(v) => onChange({ healSize: v })}
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      <Button size="sm" variant="outline" disabled={!healCount} onClick={() => undoStroke(true)}>
+                        <Undo2 className="h-4 w-4" /> Undo
+                      </Button>
+                      <Button size="sm" variant="ghost" disabled={!healCount} onClick={() => clearStrokes(true)}>
+                        Clear all spot fixes
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" variant="outline" onClick={() => replaceLook(omit(own, faceKeys))}>
+                      <RotateCcw className="h-4 w-4" /> Back to the tool's level
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => onLookToAll(pick(look, faceKeys))}>
+                      Use on all photos
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted">
+                    Touch-up only cleans the skin, light and eyes — it never changes the shape of the face, so the photo is still
+                    good for passports and IDs.
+                  </p>
+                </>
+              ) : (
+                <p className="text-sm text-muted">Face touch-up needs the automatic photo. Remove this photo and add it again.</p>
+              )
             ) : null}
             {tab === "background" ? (
               <BackgroundControls
@@ -205,7 +366,12 @@ export function PassportEditor({ p, rows, head, globalBg, globalFix, onChange, o
                 bg={bg}
                 keep={keep}
                 look={look}
+                allowOwnBg={allowOwnBg}
+                maskCount={maskCount}
                 onEdge={(v) => changeLook({ edge: v })}
+                onBlur={(v) => changeLook({ bgBlur: v })}
+                onUndo={() => undoStroke(false)}
+                onClear={() => clearStrokes(false)}
                 onChange={onChange}
               />
             ) : null}
@@ -214,6 +380,18 @@ export function PassportEditor({ p, rows, head, globalBg, globalFix, onChange, o
       )}
     </div>
   );
+}
+
+/** Same framing, zoomed `z` times around the face (for spot fixing). */
+function zoomToFace(edit, portrait, aspect, z) {
+  const e = { ...defaultEdit, ...edit };
+  const pw = portrait.width;
+  const ph = portrait.height;
+  const f = portrait.face;
+  const fx = f.cx;
+  const fy = (f.topY + f.chinY) / 2;
+  const s = Math.min(aspect / pw, 1 / ph) * e.zoom * z; // frame units (height = 1) per portrait pixel
+  return { ...e, zoom: e.zoom * z, x: (-(fx - pw / 2) * s) / aspect, y: -(fy - ph / 2) * s };
 }
 
 function CopiesEditor({ p, rows, onChange }) {
@@ -237,26 +415,43 @@ function CopiesEditor({ p, rows, onChange }) {
   );
 }
 
-function BackgroundControls({ p, bg, keep, look, onEdge, onChange }) {
+function BackgroundControls({ p, bg, keep, look, allowOwnBg, maskCount, onEdge, onBlur, onUndo, onClear, onChange }) {
   const brush = p.brush ?? { mode: "erase", size: 4 };
   const setBrush = (patch) => onChange({ brush: { ...brush, ...patch } });
+  const canPaint = !keep || look.bgBlur > 0;
   return (
     <div className="space-y-4">
-      <Field label="Background for this photo">
-        <div className="space-y-2">
-          <BgPicker value={bg} onChange={(v) => onChange({ bg: v })} id={`bg-${p.id}`} />
-          {p.bg != null ? (
-            <button type="button" className="text-xs font-medium text-brand-700 hover:underline" onClick={() => onChange({ bg: null })}>
-              Use the same background as the other photos
-            </button>
-          ) : null}
-        </div>
-      </Field>
+      {allowOwnBg ? (
+        <Field label="Background for this photo">
+          <div className="space-y-2">
+            <BgPicker value={bg} onChange={(v) => onChange({ bg: v })} id={`bg-${p.id}`} />
+            {p.bg != null ? (
+              <button
+                type="button"
+                className="text-xs font-medium text-brand-700 hover:underline"
+                onClick={() => onChange({ bg: null })}
+              >
+                Use the same background as the other photos
+              </button>
+            ) : null}
+          </div>
+        </Field>
+      ) : null}
       {keep ? (
-        <p className="text-sm text-muted">The original background is kept, so there is nothing to clean up.</p>
-      ) : (
+        <Slider label="Blur the original background" value={look.bgBlur} min={0} max={100} defaultValue={0} onChange={onBlur} />
+      ) : null}
+      {canPaint ? (
         <>
-          <Slider label="Tighter edges (removes a halo)" value={look.edge} min={0} max={100} defaultValue={0} onChange={onEdge} />
+          {!keep ? (
+            <Slider
+              label="Tighter edges (removes a halo)"
+              value={look.edge}
+              min={0}
+              max={100}
+              defaultValue={0}
+              onChange={onEdge}
+            />
+          ) : null}
           <div className="space-y-2">
             <p className="text-xs font-medium text-ink-700">Fix by hand — paint on the photo</p>
             <Segmented
@@ -268,22 +463,19 @@ function BackgroundControls({ p, bg, keep, look, onEdge, onChange }) {
               value={brush.mode}
               onChange={(mode) => setBrush({ mode })}
             />
-            <Slider label="Brush size" value={brush.size} min={1} max={15} defaultValue={4} onChange={(size) => setBrush({ size })} />
+            <Slider
+              label="Brush size"
+              value={brush.size}
+              min={1}
+              max={15}
+              defaultValue={4}
+              onChange={(size) => setBrush({ size })}
+            />
             <div className="flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!p.strokes.length}
-                onClick={() => onChange({ strokes: p.strokes.slice(0, -1), strokesRev: (p.strokesRev || 0) + 1 })}
-              >
+              <Button size="sm" variant="outline" disabled={!maskCount} onClick={onUndo}>
                 <Undo2 className="h-4 w-4" /> Undo
               </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={!p.strokes.length}
-                onClick={() => onChange({ strokes: [], strokesRev: (p.strokesRev || 0) + 1 })}
-              >
+              <Button size="sm" variant="ghost" disabled={!maskCount} onClick={onClear}>
                 Clear all marks
               </Button>
             </div>
@@ -293,6 +485,8 @@ function BackgroundControls({ p, bg, keep, look, onEdge, onChange }) {
             </p>
           </div>
         </>
+      ) : (
+        <p className="text-sm text-muted">The original background is kept, so there is nothing to clean up.</p>
       )}
     </div>
   );
@@ -320,6 +514,27 @@ function useFrameSize(aspect, maxHeight = 420) {
   return [ref, size];
 }
 
+function CompareButton({ compare, setCompare }) {
+  return (
+    <div className="flex justify-center">
+      <button
+        type="button"
+        onPointerDown={() => setCompare(true)}
+        onPointerUp={() => setCompare(false)}
+        onPointerLeave={() => setCompare(false)}
+        onKeyDown={(e) => e.key === " " && setCompare(true)}
+        onKeyUp={() => setCompare(false)}
+        className={cn(
+          "inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-medium select-none",
+          compare ? "bg-ink-900 text-white" : "text-ink-700 hover:bg-ink-50",
+        )}
+      >
+        <Eye className="h-4 w-4" /> {compare ? "Original photo" : "Hold to compare with original"}
+      </button>
+    </div>
+  );
+}
+
 /** The photo as it will print, with "hold to compare" against the original. */
 function FramePreview({ source, original, edit, aspect, fill }) {
   const [boxRef, size] = useFrameSize(aspect);
@@ -344,32 +559,24 @@ function FramePreview({ source, original, edit, aspect, fill }) {
           aria-label="Edited photo"
         />
       </div>
-      <div className="flex justify-center">
-        <button
-          type="button"
-          onPointerDown={() => setCompare(true)}
-          onPointerUp={() => setCompare(false)}
-          onPointerLeave={() => setCompare(false)}
-          onKeyDown={(e) => e.key === " " && setCompare(true)}
-          onKeyUp={() => setCompare(false)}
-          className={cn(
-            "inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-medium select-none",
-            compare ? "bg-ink-900 text-white" : "text-ink-700 hover:bg-ink-50",
-          )}
-        >
-          <Eye className="h-4 w-4" /> {compare ? "Original photo" : "Hold to compare with original"}
-        </button>
-      </div>
+      <CompareButton compare={compare} setCompare={setCompare} />
     </div>
   );
 }
 
-/** Paint erase / restore strokes directly on the framed photo. */
-function BrushView({ p, source, edit, aspect, fill, disabled, onStroke, brush }) {
+const brushLook = {
+  erase: { fill: "rgba(220,38,38,0.45)", line: "#dc2626", label: "Erasing", Icon: Eraser },
+  restore: { fill: "rgba(22,163,74,0.45)", line: "#16a34a", label: "Bringing back", Icon: Brush },
+  heal: { fill: "rgba(59,92,240,0.35)", line: "#3b5cf0", label: "Spot fix", Icon: Sparkles },
+};
+
+/** Paint erase / restore / spot-fix strokes directly on the framed photo. */
+function BrushView({ p, source, original, edit, aspect, fill, disabled, onStroke, brush }) {
   const [boxRef, size] = useFrameSize(aspect);
   const canvasRef = useRef(null);
   const overlayRef = useRef(null);
   const stroke = useRef(null);
+  const [compare, setCompare] = useState(false);
   const dpr = typeof window === "undefined" ? 1 : Math.min(window.devicePixelRatio || 1, 2);
   const W = size.w * dpr;
   const H = size.h * dpr;
@@ -379,19 +586,21 @@ function BrushView({ p, source, edit, aspect, fill, disabled, onStroke, brush })
   const quarter = e.turn % 2 === 1;
   const s = Math.min(W / (quarter ? ih : iw), H / (quarter ? iw : ih)) * e.zoom; // display px per source px
   const toFull = p.portrait.width / iw; // source px → full portrait px
+  // Brush size is a share of the frame width when not zoomed; zooming in makes the brush finer on the photo.
   const radiusDisplay = (brush.size / 100) * W;
+  const look = brushLook[brush.mode] ?? brushLook.erase;
 
   useEffect(() => {
     const c = canvasRef.current;
     if (!c) return;
-    const out = renderEdit(source, edit, W, H, { fit: "contain", background: fill });
+    const out = renderEdit(compare && original ? original : source, edit, W, H, { fit: "contain", background: fill });
     c.width = out.width;
     c.height = out.height;
     c.getContext("2d").drawImage(out, 0, 0);
     const o = overlayRef.current;
     o.width = out.width;
     o.height = out.height;
-  }, [source, edit, W, H, fill]);
+  }, [source, original, compare, edit, W, H, fill]);
 
   const local = (ev) => {
     const rect = overlayRef.current.getBoundingClientRect();
@@ -412,8 +621,8 @@ function BrushView({ p, source, edit, aspect, fill, disabled, onStroke, brush })
   const drawDot = (pt, live) => {
     const ctx = overlayRef.current.getContext("2d");
     if (!live) ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = brush.mode === "erase" ? "rgba(220,38,38,0.45)" : "rgba(22,163,74,0.45)";
-    ctx.strokeStyle = brush.mode === "erase" ? "#dc2626" : "#16a34a";
+    ctx.fillStyle = look.fill;
+    ctx.strokeStyle = look.line;
     ctx.lineWidth = 1.5 * dpr;
     ctx.beginPath();
     ctx.arc(pt.x, pt.y, radiusDisplay, 0, Math.PI * 2);
@@ -451,31 +660,36 @@ function BrushView({ p, source, edit, aspect, fill, disabled, onStroke, brush })
   };
 
   return (
-    <div ref={boxRef} className="flex w-full justify-center">
-      <div className="relative" style={{ width: size.w, height: size.h }}>
-        <canvas
-          ref={canvasRef}
-          style={{ width: size.w, height: size.h }}
-          className="absolute inset-0 rounded-md bg-white shadow-[0_0_0_1px_var(--color-line-strong)]"
-        />
-        <canvas
-          ref={overlayRef}
-          style={{ width: size.w, height: size.h }}
-          className={cn("absolute inset-0 touch-none", disabled ? "cursor-not-allowed" : "cursor-crosshair")}
-          aria-label={brush.mode === "erase" ? "Paint to erase background" : "Paint to bring back"}
-          onPointerDown={onDown}
-          onPointerMove={onMove}
-          onPointerUp={onUp}
-          onPointerCancel={onUp}
-          onPointerLeave={() => {
-            if (!stroke.current) overlayRef.current?.getContext("2d").clearRect(0, 0, W, H);
-          }}
-        />
-        <span className="pointer-events-none absolute top-2 left-2 inline-flex items-center gap-1 rounded-md bg-white/90 px-2 py-1 text-[11px] font-medium text-ink-800 shadow-xs">
-          {brush.mode === "erase" ? <Eraser className="h-3.5 w-3.5" /> : <Brush className="h-3.5 w-3.5" />}
-          {brush.mode === "erase" ? "Erasing" : "Bringing back"}
-        </span>
+    <div className="space-y-2">
+      <div ref={boxRef} className="flex w-full justify-center">
+        <div className="relative" style={{ width: size.w, height: size.h }}>
+          <canvas
+            ref={canvasRef}
+            style={{ width: size.w, height: size.h }}
+            className="absolute inset-0 rounded-md bg-white shadow-[0_0_0_1px_var(--color-line-strong)]"
+          />
+          <canvas
+            ref={overlayRef}
+            style={{ width: size.w, height: size.h }}
+            className={cn("absolute inset-0 touch-none", disabled ? "cursor-not-allowed" : "cursor-crosshair")}
+            aria-label={look.label}
+            onPointerDown={onDown}
+            onPointerMove={onMove}
+            onPointerUp={onUp}
+            onPointerCancel={onUp}
+            onPointerLeave={() => {
+              if (!stroke.current) overlayRef.current?.getContext("2d").clearRect(0, 0, W, H);
+            }}
+          />
+          {!disabled ? (
+            <span className="pointer-events-none absolute top-2 left-2 inline-flex items-center gap-1 rounded-md bg-white/90 px-2 py-1 text-[11px] font-medium text-ink-800 shadow-xs">
+              <look.Icon className="h-3.5 w-3.5" />
+              {look.label}
+            </span>
+          ) : null}
+        </div>
       </div>
+      {original ? <CompareButton compare={compare} setCompare={setCompare} /> : null}
     </div>
   );
 }

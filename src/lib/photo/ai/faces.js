@@ -52,7 +52,7 @@ function getMesh() {
 
 /** Start downloading the face model early (e.g. when a photo tool opens). */
 export function warmFaces() {
-  getMesh().catch(() => {});
+  getMesh().catch(() => { });
 }
 
 // Landmark numbers in the 468-point face mesh.
@@ -61,8 +61,9 @@ const L = { top: 10, chin: 152, nose: 1, left: 234, right: 454, eyeA: [33, 133],
 /**
  * @typedef {{ x: number, y: number }} Pt
  * @typedef {{ eyeL: Pt, eyeR: Pt, top: Pt, chin: Pt, nose: Pt, sideL: Pt, sideR: Pt,
- *   box: { x0: number, y0: number, x1: number, y1: number } }} Face
+ *   box: { x0: number, y0: number, x1: number, y1: number }, pts: Float32Array }} Face
  * eyeL is the eye on the left of the picture. top = upper forehead (not the top of the hair).
+ * pts = all 468 mesh points as x, y, x, y, … in pixels (used by the face touch-up in retouch.js).
  */
 
 let queue = Promise.resolve();
@@ -87,7 +88,7 @@ export function findFaces(canvas) {
     const list = (result.multiFaceLandmarks || []).map((lm) => toFace(lm, input.width * sx, input.height * sy));
     return list.sort((a, b) => area(b.box) - area(a.box));
   });
-  queue = run.catch(() => {});
+  queue = run.catch(() => { });
   return run;
 }
 
@@ -110,6 +111,11 @@ function toFace(lm, w, h) {
   }
   // eyeA is the person's right eye = the picture's left eye when the photo is upright.
   // Keep that order (not sorted by x), so a sideways or upside-down photo still gives the true tilt.
+  const pts = new Float32Array(lm.length * 2);
+  lm.forEach((pt, i) => {
+    pts[i * 2] = pt.x * w;
+    pts[i * 2 + 1] = pt.y * h;
+  });
   const eyeL = mid(L.eyeA);
   const eyeR = mid(L.eyeB);
   return {
@@ -121,6 +127,7 @@ function toFace(lm, w, h) {
     sideL: p(L.left),
     sideR: p(L.right),
     box: { x0, y0, x1, y1 },
+    pts,
   };
 }
 

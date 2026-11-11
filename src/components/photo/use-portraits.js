@@ -19,7 +19,8 @@ export const stepText = {
 
 /**
  * A list of photos that are prepared automatically (face, background, colour), one at a time.
- * Each person: { id, name, image, status, portrait, manual, edits, look, strokes, strokesRev, bg, fix, copies, warnings, error }.
+ * Each person: { id, name, image, status, portrait, manual, edits, look, strokes, strokesRev, bg, fix, copies, healSize,
+ *   brush, warnings, error }. strokes hold background brush marks (erase / restore) and spot fixes (heal).
  * status: queued | face | background | colour (working) · done · error · manual (cropped by hand)
  */
 export function usePortraits({ max = Infinity } = {}) {
@@ -111,6 +112,8 @@ export function usePortraits({ max = Infinity } = {}) {
     });
 
   const updateAll = (patch) => setPeople((list) => list.map((p) => ({ ...p, ...patch })));
+  /** Merge part of a look (e.g. only the light sliders) into every photo's own look. */
+  const lookToAll = (part) => setPeople((list) => list.map((p) => ({ ...p, look: { ...p.look, ...part } })));
   const working = people.some((p) => p.status in stepText);
-  return { people, addFiles, update, updateAll, remove, clear, move, working };
+  return { people, addFiles, update, updateAll, lookToAll, remove, clear, move, working };
 }

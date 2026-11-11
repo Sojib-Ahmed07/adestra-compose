@@ -14,7 +14,9 @@ const plural = (word) => (/[^aeiou]y$/.test(word) ? word.slice(0, -1) + "ies" : 
 /**
  * Live page preview + Print / Save PDF / Save JPG for already laid-out pages.
  * @param {{ pages: import("@/lib/photo/sheet").Placement[][], paper: { w: number, h: number }, paperLabel: string,
- *   cutLines: boolean, fileName: string, count: number, emptyText?: string, unit?: string, printId?: string }} props
+ *   cutLines: boolean, fileName: string, count: number, emptyText?: string, unit?: string, printId?: string,
+ *   hidePreview?: boolean }} props
+ * hidePreview: the parent shows its own (interactive) page preview — only the buttons and the count are shown here.
  */
 export function SheetOutput({
   pages,
@@ -26,6 +28,7 @@ export function SheetOutput({
   emptyText = "Add a photo to see the page.",
   unit = "photo",
   printId,
+  hidePreview = false,
 }) {
   const toast = useToast();
   const [busy, setBusy] = useState("");
@@ -43,7 +46,7 @@ export function SheetOutput({
   }, []);
 
   useEffect(() => {
-    if (empty) {
+    if (empty || hidePreview) {
       setPreviews([]);
       return;
     }
@@ -54,7 +57,7 @@ export function SheetOutput({
       setPreviews(pages.slice(0, 6).map((p) => renderPage(p, paper, pxPerMm, { cutLines, cache }).toDataURL("image/jpeg", 0.85)));
     }, 120);
     return () => clearTimeout(t);
-  }, [pages, previewW, cutLines, paper, empty]);
+  }, [pages, previewW, cutLines, paper, empty, hidePreview]);
 
   const fullPages = () => {
     const cache = new Map();
@@ -107,7 +110,7 @@ export function SheetOutput({
 
   return (
     <div className="space-y-4">
-      <div ref={wrapRef} className="space-y-3">
+      <div ref={wrapRef} className={hidePreview ? "hidden" : "space-y-3"}>
         {empty ? (
           <div
             className="flex w-full items-center justify-center rounded-md border border-dashed border-line-strong bg-white px-6 text-center text-sm text-subtle"

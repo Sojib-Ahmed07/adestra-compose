@@ -14,6 +14,91 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
  * @returns {{ corners: Pt[], found: boolean }} corners in image pixels: top-left, top-right, bottom-right, bottom-left
  */
 export function findCardCorners(img) {
+  const seg = segment(img);
+  const fallback = { found: false, corners: insetCorners(seg.W, seg.H) };
+  const region = biggestRegion(seg.mask, seg.w, seg.h);
+  if (!region || region.length < seg.w * seg.h * 0.12) return fallback;
+  const quad = quadOf(region, seg.w);
+  if (!quad || polyArea(quad) < seg.w * seg.h * 0.12) return fallback;
+  return { found: true, corners: toImage(quad, seg) };
+}
+
+/**
+ * Two cards in one photo (front and back side by side or one above the other).
+ * @returns {{ cards: Pt[][], found: boolean }} cards in reading order (top first, then left first); 1 or 2 entries
+ */
+export function findTwoCards(img) {
+  const seg = segment(img);
+  const { w, h } = seg;
+  const regions = allRegions(seg.mask, w, h).filter((r) => r.length >= w * h * 0.04);
+  let quads = [];
+  if (regions.length >= 2 && regions[1].length >= regions[0].length * 0.4) {
+    quads = regions
+      .slice(0, 2)
+      .map((r) => quadOf(r, w))
+      .filter(Boolean);
+  } else if (regions.length >= 1) {
+    // The two cards touch → one region: split its shape in two, the way that gives card-shaped halves.
+    const q = quadOf(regions[0], w);
+    if (q) quads = splitQuad(orderCorners(q));
+  }
+  if (quads.length < 2) {
+    const one = findCardCorners(img);
+    return { cards: [one.corners], found: false };
+  }
+  const cards = quads.map((q) => toImage(orderCorners(q), seg));
+  const centre = (c) => ({ x: c.reduce((a, p) => a + p.x, 0) / 4, y: c.reduce((a, p) => a + p.y, 0) / 4 });
+  const [a, b] = cards.map(centre);
+  const hA = Math.hypot(cards[0][3].x - cards[0][0].x, cards[0][3].y - cards[0][0].y);
+  const aFirst = Math.abs(a.y - b.y) > hA * 0.5 ? a.y < b.y : a.x < b.x;
+  return { cards: aFirst ? cards : [cards[1], cards[0]], found: true };
+}
+
+const CARD_RATIO = 85.6 / 54;
+
+function splitQuad(q) {
+  const [tl, tr, br, bl] = q;
+  const mid = (p, r) => ({ x: (p.x + r.x) / 2, y: (p.y + r.y) / 2 });
+  const width = (Math.hypot(tr.x - tl.x, tr.y - tl.y) + Math.hypot(br.x - bl.x, br.y - bl.y)) / 2;
+  const height = (Math.hypot(bl.x - tl.x, bl.y - tl.y) + Math.hypot(br.x - tr.x, br.y - tr.y)) / 2;
+  const ratio = (a, b) => Math.max(a, b) / Math.max(1, Math.min(a, b));
+  const sideBySide = Math.abs(ratio(width / 2, height) - CARD_RATIO) < Math.abs(ratio(width, height / 2) - CARD_RATIO);
+  if (sideBySide) {
+    const mt = mid(tl, tr);
+    const mb = mid(bl, br);
+    return [
+      [tl, mt, mb, bl],
+      [mt, tr, br, mb],
+    ];
+  }
+  const ml = mid(tl, bl);
+  const mr = mid(tr, br);
+  return [
+    [tl, tr, mr, ml],
+    [ml, mr, br, bl],
+  ];
+}
+
+function insetCorners(W, H) {
+  return [
+    { x: W * 0.04, y: H * 0.04 },
+    { x: W * 0.96, y: H * 0.04 },
+    { x: W * 0.96, y: H * 0.96 },
+    { x: W * 0.04, y: H * 0.96 },
+  ];
+}
+
+function toImage(quad, seg) {
+  return orderCorners(quad).map((p) => ({ x: clamp(p.x / seg.s, 0, seg.W), y: clamp(p.y / seg.s, 0, seg.H) }));
+}
+
+function quadOf(region, w) {
+  const hull = convexHull(region.map((i) => ({ x: i % w, y: Math.floor(i / w) })));
+  return biggestQuad(hull);
+}
+
+/** Card(s) vs table: small copy, colour distance from the table colour, Otsu threshold, cleaned mask. */
+function segment(img) {
   const W = srcW(img);
   const H = srcH(img);
   const s = Math.min(1, 360 / Math.max(W, H));
@@ -23,16 +108,6 @@ export function findCardCorners(img) {
   const ctx = c.getContext("2d", { willReadFrequently: true });
   ctx.drawImage(img, 0, 0, w, h);
   const d = ctx.getImageData(0, 0, w, h).data;
-
-  const fallback = {
-    found: false,
-    corners: [
-      { x: W * 0.04, y: H * 0.04 },
-      { x: W * 0.96, y: H * 0.04 },
-      { x: W * 0.96, y: H * 0.96 },
-      { x: W * 0.04, y: H * 0.96 },
-    ],
-  };
 
   // Table colour = median of the border pixels.
   const border = [[], [], []];
@@ -55,15 +130,7 @@ export function findCardCorners(img) {
   // Close small gaps (text, photo on the card), then remove specks.
   mask = erode(dilate(mask, w, h, 3), w, h, 3);
   mask = dilate(erode(mask, w, h, 2), w, h, 2);
-
-  const region = biggestRegion(mask, w, h);
-  if (!region || region.length < w * h * 0.12) return fallback;
-
-  const hull = convexHull(region.map((i) => ({ x: i % w, y: Math.floor(i / w) })));
-  const quad = biggestQuad(hull);
-  if (!quad) return fallback;
-  if (polyArea(quad) < w * h * 0.12) return fallback;
-  return { found: true, corners: orderCorners(quad).map((p) => ({ x: clamp(p.x / s, 0, W), y: clamp(p.y / s, 0, H) })) };
+  return { mask, w, h, s, W, H };
 }
 
 function pushPx(arr, d, j) {
@@ -143,8 +210,13 @@ function morph(m, w, h, r, grow) {
 }
 
 function biggestRegion(mask, w, h) {
+  return allRegions(mask, w, h)[0] ?? null;
+}
+
+/** Connected regions of a 0/1 mask, biggest first (lists of pixel indexes). */
+function allRegions(mask, w, h) {
   const seen = new Uint8Array(w * h);
-  let best = null;
+  const regions = [];
   for (let i = 0; i < mask.length; i++) {
     if (!mask[i] || seen[i]) continue;
     const list = [];
@@ -161,9 +233,9 @@ function biggestRegion(mask, w, h) {
         }
       }
     }
-    if (!best || list.length > best.length) best = list;
+    regions.push(list);
   }
-  return best;
+  return regions.sort((a, b) => b.length - a.length);
 }
 
 function convexHull(points) {
@@ -249,7 +321,7 @@ export function warpQuad(img, corners, w, h) {
   let q = corners;
   const top = Math.hypot(q[1].x - q[0].x, q[1].y - q[0].y) + Math.hypot(q[2].x - q[3].x, q[2].y - q[3].y);
   const side = Math.hypot(q[3].x - q[0].x, q[3].y - q[0].y) + Math.hypot(q[2].x - q[1].x, q[2].y - q[1].y);
-  if ((side > top) !== (h > w)) q = [q[3], q[0], q[1], q[2]]; // turn a quarter
+  if (side > top !== h > w) q = [q[3], q[0], q[1], q[2]]; // turn a quarter
 
   const W = srcW(img);
   const H = srcH(img);

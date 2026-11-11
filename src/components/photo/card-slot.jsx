@@ -12,38 +12,43 @@ import { useToast } from "@/components/ui/interactive";
 let nextId = 1;
 
 /**
+ * Build a card value from a loaded photo and 4 corners (TL, TR, BR, BL) — also used for "both sides in one photo".
+ * @param {{ img: any, url: string }} photo  from loadImage()
+ */
+export function cardValue(photo, corners, aspect, outWidth = 1600, found = true) {
+  const outH = Math.round(outWidth / aspect);
+  const card = warpQuad(photo.img, corners, outWidth, outH);
+  return { image: { img: card, url: `card-${nextId++}` }, edit: { ...defaultEdit }, src: { photo, corners, found } };
+}
+
+/**
  * One side of a card: drop a scan or a phone photo → the card is found, flattened and straightened.
- * Value = { image: { img: canvas, url: string }, edit } | null — the same shape PhotoSlot gives, so
- * the print code doesn't care which was used. `url` is only an id here.
+ * Value = { image: { img: canvas, url: string }, edit, src: { photo, corners, found } } | null — the same shape PhotoSlot
+ * gives (plus `src`, the original photo and corners, for "Fix corners"), so the print code doesn't care which was used.
+ * `url` is only an id here.
  * @param {{ title: string, value: any, onChange: (v: any) => void, aspect: number, outWidth?: number, hint?: string }} props
  */
 export function CardSlot({ title, value, onChange, aspect, outWidth = 1600, hint }) {
   const toast = useToast();
   const changeId = useId();
-  const [photo, setPhoto] = useState(null); // loaded original
-  const [corners, setCorners] = useState(null);
+  const [pending, setPending] = useState(null); // { photo, corners, found } while the corners are being placed
   const [editing, setEditing] = useState(false);
-  const [found, setFound] = useState(true);
-  const outW = outWidth;
-  const outH = Math.round(outWidth / aspect);
+  const src = pending ?? value?.src ?? null;
 
-  const apply = (img, q) => {
-    const card = warpQuad(img, q, outW, outH);
-    onChange({ image: { img: card, url: `card-${nextId++}` }, edit: { ...defaultEdit } });
+  const apply = (photo, q, found = true) => {
+    onChange(cardValue(photo, q, aspect, outWidth, found));
+    setPending(null);
     setEditing(false);
   };
 
   const take = async (files) => {
     try {
-      const loaded = await loadImage(files[0]);
-      if (photo) setTimeout(() => URL.revokeObjectURL(photo.url), 1000);
-      setPhoto(loaded);
-      const guess = findCardCorners(loaded.img);
-      setCorners(guess.corners);
-      setFound(guess.found);
-      if (guess.found) apply(loaded.img, guess.corners);
+      const photo = await loadImage(files[0]);
+      const guess = findCardCorners(photo.img);
+      if (guess.found) apply(photo, guess.corners);
       else {
         onChange(null);
+        setPending({ photo, corners: guess.corners, found: false });
         setEditing(true);
       }
     } catch (err) {
@@ -52,24 +57,22 @@ export function CardSlot({ title, value, onChange, aspect, outWidth = 1600, hint
   };
 
   const clear = () => {
-    if (photo) setTimeout(() => URL.revokeObjectURL(photo.url), 1000);
-    setPhoto(null);
-    setCorners(null);
+    setPending(null);
     setEditing(false);
     onChange(null);
   };
 
   const turn = () => {
-    const src = value.image.img;
-    const c = makeCanvas(src.width, src.height);
+    const img = value.image.img;
+    const c = makeCanvas(img.width, img.height);
     const ctx = c.getContext("2d");
     ctx.translate(c.width, c.height);
     ctx.rotate(Math.PI);
-    ctx.drawImage(src, 0, 0);
+    ctx.drawImage(img, 0, 0);
     onChange({ ...value, image: { img: c, url: `card-${nextId++}` } });
   };
 
-  if (!photo && !value) {
+  if (!src && !value) {
     return (
       <FileDrop
         onFiles={take}
@@ -79,6 +82,11 @@ export function CardSlot({ title, value, onChange, aspect, outWidth = 1600, hint
       />
     );
   }
+
+  const setCorners = (corners) => {
+    if (pending) setPending({ ...pending, corners });
+    else setPending({ ...value.src, corners });
+  };
 
   return (
     <div className="space-y-3">
@@ -96,7 +104,7 @@ export function CardSlot({ title, value, onChange, aspect, outWidth = 1600, hint
               accept="image/*"
               className="sr-only"
               onChange={(e) => {
-                if (e.target.files?.length) take(e.target.files);
+                if (e.target.files?.length) take([...e.target.files]);
                 e.target.value = "";
               }}
             />
@@ -111,38 +119,43 @@ export function CardSlot({ title, value, onChange, aspect, outWidth = 1600, hint
         </div>
       </div>
 
-      {editing && photo && corners ? (
+      {editing && src ? (
         <div className="space-y-3">
-          <p className={found ? "text-sm text-muted" : "text-sm text-warn"}>
-            {found
+          <p className={src.found ? "text-sm text-muted" : "text-sm text-warn"}>
+            {src.found
               ? "Drag the 4 dots onto the card's corners if they're not exact."
               : "Couldn't find the card's edges by itself. Drag the 4 dots onto the card's corners."}
           </p>
-          <CornerEditor img={photo.img} url={photo.url} corners={corners} onChange={setCorners} />
+          <CornerEditor img={src.photo.img} url={src.photo.url} corners={src.corners} onChange={setCorners} />
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" variant="accent" onClick={() => apply(photo.img, corners)}>
+            <Button size="sm" variant="accent" onClick={() => apply(src.photo, src.corners)}>
               <Crop className="h-4 w-4" /> Straighten card
             </Button>
             <Button
               size="sm"
               variant="outline"
               onClick={() => {
-                const W = srcW(photo.img);
-                const H = srcH(photo.img);
-                const q = [
+                const W = srcW(src.photo.img);
+                const H = srcH(src.photo.img);
+                apply(src.photo, [
                   { x: 0, y: 0 },
                   { x: W, y: 0 },
                   { x: W, y: H },
                   { x: 0, y: H },
-                ];
-                setCorners(q);
-                apply(photo.img, q);
+                ]);
               }}
             >
               <Maximize className="h-4 w-4" /> Already cropped — use whole picture
             </Button>
             {value ? (
-              <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setPending(null);
+                  setEditing(false);
+                }}
+              >
                 Cancel
               </Button>
             ) : null}
@@ -152,7 +165,7 @@ export function CardSlot({ title, value, onChange, aspect, outWidth = 1600, hint
         <div className="space-y-2">
           <CanvasView canvas={value.image.img} label={`${title} — straightened`} />
           <div className="flex flex-wrap gap-1.5">
-            {photo ? (
+            {value.src ? (
               <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
                 <Crop className="h-4 w-4" /> Fix corners
               </Button>
@@ -180,11 +193,7 @@ function CanvasView({ canvas, label }) {
     ctx.drawImage(canvas, 0, 0, c.width, c.height);
   }, [canvas]);
   return (
-    <canvas
-      ref={ref}
-      aria-label={label}
-      className="w-full rounded-lg bg-white shadow-[0_0_0_1px_var(--color-line-strong)]"
-    />
+    <canvas ref={ref} aria-label={label} className="w-full rounded-lg bg-white shadow-[0_0_0_1px_var(--color-line-strong)]" />
   );
 }
 

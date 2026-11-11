@@ -6,8 +6,9 @@
 import { makeCanvas, srcH, srcW } from "../image";
 import { findFaces } from "./faces";
 import { matte } from "./matte";
+import { analyseTone, applyTone } from "./tone";
 
-export class NoFaceError extends Error {}
+export class NoFaceError extends Error { }
 
 const WORK_MAX = 2400; // longest side used for face finding
 const TARGET_FACE = 440; // forehead-to-chin height, in pixels of the prepared photo
@@ -20,7 +21,9 @@ export const headSizes = {
 };
 
 /**
- * @typedef {{ cx: number, eyeY: number, topY: number, chinY: number, crownY: number, faceW: number }} FaceInfo
+ * @typedef {{ cx: number, eyeY: number, topY: number, chinY: number, crownY: number, faceW: number,
+ *   pts: Float32Array | null }} FaceInfo
+ * pts = the 468 face-mesh points (x, y, …) in pixels of the prepared portrait.
  * @typedef {{ width: number, height: number, angle: number, face: FaceInfo, warnings: string[],
  *   variant: (opts: { keepBackground?: boolean, fix?: boolean }) => HTMLCanvasElement }} Portrait
  */
@@ -98,7 +101,17 @@ export async function preparePortrait(img, { onStep } = {}) {
     chinY: P.chin.y,
     faceW: Math.hypot(P.sideR.x - P.sideL.x, P.sideR.y - P.sideL.y),
     crownY: 0,
+    pts: null,
   };
+  if (face.pts) {
+    const pts = new Float32Array(face.pts.length);
+    for (let k = 0; k < pts.length; k += 2) {
+      const q = map({ x: face.pts[k], y: face.pts[k + 1] });
+      pts[k] = q.x;
+      pts[k + 1] = q.y;
+    }
+    info.pts = pts;
+  }
 
   const src = ctx.getImageData(0, 0, W, H).data;
 
@@ -111,22 +124,23 @@ export async function preparePortrait(img, { onStep } = {}) {
 
   onStep?.("colour");
   const fg = decontaminate(src, alpha, W, H);
-  const lut = colourFix(src, alpha, W, H, info);
+  const tone = analyseTone(src, alpha, W, H, info);
 
   const cache = new Map();
   const variant = ({ keepBackground = false, fix = true } = {}) => {
     const key = `${keepBackground}|${fix}`;
     if (!cache.has(key)) {
+      const from = keepBackground ? src : fg;
+      const rgb = applyTone(from, W * H, fix ? tone : null);
       const out = makeCanvas(W, H);
       const octx = out.getContext("2d");
       const data = octx.createImageData(W, H);
       const d = data.data;
-      const from = keepBackground ? src : fg;
       for (let i = 0; i < W * H; i++) {
         const j = i * 4;
-        d[j] = fix ? lut[0][from[j]] : from[j];
-        d[j + 1] = fix ? lut[1][from[j + 1]] : from[j + 1];
-        d[j + 2] = fix ? lut[2][from[j + 2]] : from[j + 2];
+        d[j] = rgb[i * 3];
+        d[j + 1] = rgb[i * 3 + 1];
+        d[j + 2] = rgb[i * 3 + 2];
         d[j + 3] = keepBackground ? src[j + 3] : alpha[i];
       }
       octx.putImageData(data, 0, 0);
@@ -135,8 +149,8 @@ export async function preparePortrait(img, { onStep } = {}) {
     return cache.get(key);
   };
 
-  // Raw pixels for the editor (look.js): original, cleaned cut-out colours, mask and the auto-fix tables.
-  const data = { W, H, src, fg, alpha, lut };
+  // Raw pixels for the editor (look.js): original, cleaned cut-out colours, mask and the automatic light/colour fix.
+  const data = { W, H, src, fg, alpha, tone };
   return { width: W, height: H, angle: (angle * 180) / Math.PI, face: info, warnings, variant, data };
 }
 
@@ -181,15 +195,15 @@ export async function cutoutWhole(img, { maxSide = 2400, onStep } = {}) {
   const variant = ({ fix = false } = {}) => {
     const key = String(fix);
     if (!cache.has(key)) {
-      const lut = fix ? colourFix(src, alpha, W, H, null) : null;
+      const rgb = applyTone(fg, W * H, fix ? analyseTone(src, alpha, W, H, null) : null);
       const out = makeCanvas(W, H);
       const octx = out.getContext("2d");
       const data = octx.createImageData(W, H);
       for (let i = 0; i < W * H; i++) {
         const j = i * 4;
-        data.data[j] = lut ? lut[0][fg[j]] : fg[j];
-        data.data[j + 1] = lut ? lut[1][fg[j + 1]] : fg[j + 1];
-        data.data[j + 2] = lut ? lut[2][fg[j + 2]] : fg[j + 2];
+        data.data[j] = rgb[i * 3];
+        data.data[j + 1] = rgb[i * 3 + 1];
+        data.data[j + 2] = rgb[i * 3 + 2];
         data.data[j + 3] = alpha[i];
       }
       octx.putImageData(data, 0, 0);
@@ -270,6 +284,7 @@ async function findViaPerson(work) {
     sideL: back(f.sideL),
     sideR: back(f.sideR),
     box: { x0: rx + f.box.x0 / zoom, y0: ry + f.box.y0 / zoom, x1: rx + f.box.x1 / zoom, y1: ry + f.box.y1 / zoom },
+    pts: f.pts ? f.pts.map((v, k) => (k % 2 ? ry : rx) + v / zoom) : null,
   }));
 }
 
@@ -488,91 +503,4 @@ function boxBlurGrid(num, den, gw, gh, r) {
     }
   }
   return [n2, d2];
-}
-
-/**
- * Gentle automatic fix, as three lookup tables (R, G, B):
- * a mild colour-cast correction, a small levels stretch, and exposure set from the face's brightness.
- */
-function colourFix(src, alpha, W, H, f) {
-  const lum = (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
-
-  // Colour cast: grey-world over the whole photo, softened and limited.
-  let sr = 0,
-    sg = 0,
-    sb = 0,
-    n = 0;
-  const hist = new Uint32Array(256);
-  let fgCount = 0;
-  for (let i = 0; i < W * H; i += 3) {
-    const j = i * 4;
-    if (!src[j + 3]) continue;
-    sr += src[j];
-    sg += src[j + 1];
-    sb += src[j + 2];
-    n++;
-    if (alpha[i] > 200) {
-      hist[Math.round(lum(src[j], src[j + 1], src[j + 2]))]++;
-      fgCount++;
-    }
-  }
-  const mean = (sr + sg + sb) / 3 / Math.max(1, n);
-  const gain = [sr, sg, sb].map((s) => {
-    const g = mean / Math.max(1, s / Math.max(1, n));
-    return clamp(1 + (g - 1) * 0.5, 0.9, 1.12);
-  });
-
-  // Levels: stretch only a little, never squash.
-  const pct = (p) => {
-    let acc = 0;
-    const target = fgCount * p;
-    for (let v = 0; v < 256; v++) {
-      acc += hist[v];
-      if (acc >= target) return v;
-    }
-    return 255;
-  };
-  const lo = fgCount ? Math.min(pct(0.005), 18) : 0;
-  const hi = fgCount ? Math.max(pct(0.995), 228) : 255;
-
-  if (!f) {
-    // No face known: only cast + levels.
-    return gain.map((g) => {
-      const t = new Uint8ClampedArray(256);
-      for (let v = 0; v < 256; v++) t[v] = Math.round(clamp((v * g - lo) / (hi - lo), 0, 1) * 255);
-      return t;
-    });
-  }
-
-  // Exposure: face (cheeks, nose, mouth) brightness → about 55%.
-  const fcx = f.cx;
-  const fcy = f.eyeY + (f.chinY - f.eyeY) * 0.45;
-  const rx = f.faceW * 0.28;
-  const ry = (f.chinY - f.eyeY) * 0.45;
-  let ls = 0,
-    ln = 0;
-  for (let y = Math.max(0, Math.floor(fcy - ry)); y < Math.min(H, fcy + ry); y += 2) {
-    for (let x = Math.max(0, Math.floor(fcx - rx)); x < Math.min(W, fcx + rx); x += 2) {
-      const dx = (x - fcx) / rx;
-      const dy = (y - fcy) / ry;
-      if (dx * dx + dy * dy > 1) continue;
-      const i = y * W + x;
-      if (alpha[i] < 230) continue;
-      const j = i * 4;
-      const v = lum(src[j] * gain[0], src[j + 1] * gain[1], src[j + 2] * gain[2]);
-      ls += clamp((v - lo) / (hi - lo), 0.001, 1);
-      ln++;
-    }
-  }
-  const skin = ln ? ls / ln : 0.55;
-  const gamma = clamp(Math.log(0.55) / Math.log(clamp(skin, 0.05, 0.95)), 0.75, 1.25);
-
-  return gain.map((g) => {
-    const t = new Uint8ClampedArray(256);
-    for (let v = 0; v < 256; v++) {
-      const s = clamp((v * g - lo) / (hi - lo), 0, 1);
-      t[v] = Math.round(Math.pow(s, gamma) * 255);
-    }
-    return t;
-  });
 }

@@ -2,28 +2,26 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useStoredState } from "@/lib/use-stored";
-import { renderEdit } from "@/lib/photo/image";
+import { ArrowLeftRight, Images } from "lucide-react";
+import { findTwoCards } from "@/lib/photo/card";
+import { enhanceLevels, enhanceScan } from "@/lib/photo/enhance";
+import { loadImage, renderEdit } from "@/lib/photo/image";
 import { ID_CARD } from "@/lib/photo/sizes";
-import { CardSlot } from "@/components/photo/card-slot";
-import { SheetPanel } from "@/components/photo/sheet-panel";
-import { Checkbox, Field, Select } from "@/components/ui/form";
-import { Segmented, Stepper } from "@/components/ui/interactive";
+import { useStoredState } from "@/lib/use-stored";
+import { CardPageLayout } from "@/components/photo/card-page";
+import { CardSlot, cardValue } from "@/components/photo/card-slot";
+import { Button } from "@/components/ui/button";
+import { FileDrop } from "@/components/ui/file-drop";
+import { Checkbox, Field } from "@/components/ui/form";
+import { Segmented, Slider, useToast } from "@/components/ui/interactive";
 import { Card, Step } from "@/components/ui/misc";
 
-const scales = [
-  { value: "100", label: "Real card size — 85.6 × 54 mm" },
-  { value: "125", label: "125% — 107 × 68 mm" },
-  { value: "150", label: "150% — 128 × 81 mm" },
-  { value: "200", label: "200% — 171 × 108 mm" },
-];
+const LOOK_DEFAULTS = { rounded: true, grey: false, level: "clear", brightness: 0, contrast: 0 };
+const validLook = (s) => s && typeof s.rounded === "boolean" && enhanceLevels.some((l) => l.value === (s.level ?? "clear"));
 
-/** Card with rounded corners like the real thing (optional). */
-function drawCard(side, w, h, rounded, grey, clear) {
-  let edit = grey ? { ...side.edit, saturation: 0 } : side.edit;
-  // "Clearer print": a little brighter and more contrast — phone photos of cards often come out dull.
-  if (clear) edit = { ...edit, brightness: 106, contrast: 122 };
-  const card = renderEdit(side.image.img, edit, w, h);
+/** One side, ready to print: straightened card, clearer, optional rounded corners. */
+function drawCard(src, w, h, rounded) {
+  const card = renderEdit(src, { zoom: 1, x: 0, y: 0, rotate: 0, turn: 0, flip: false }, w, h);
   if (!rounded) return card;
   const ctx = card.getContext("2d");
   const r = Math.round(Math.min(w, h) * 0.06);
@@ -38,51 +36,87 @@ function drawCard(side, w, h, rounded, grey, clear) {
 }
 
 export function IdCardPrintTool() {
+  const toast = useToast();
   const [front, setFront] = useState(null);
   const [back, setBack] = useState(null);
-  const [copies, setCopies] = useState(1);
-  const [opts, setOpts] = useStoredState(
-    "id-card:settings",
-    { scale: "100", arrange: "stack", rounded: true, grey: false, clear: false },
-    (s) => s && scales.some((x) => x.value === s.scale) && ["side", "stack"].includes(s.arrange),
-  );
-  const { scale, arrange, rounded, grey, clear } = opts;
-  const setScale = (v) => setOpts((o) => ({ ...o, scale: v }));
-  const setArrange = (v) => setOpts((o) => ({ ...o, arrange: v }));
-  const setRounded = (v) => setOpts((o) => ({ ...o, rounded: v }));
-  const setGrey = (v) => setOpts((o) => ({ ...o, grey: v }));
-  const setClear = (v) => setOpts((o) => ({ ...o, clear: v }));
-
-  const w = (ID_CARD.w * Number(scale)) / 100;
-  const h = (ID_CARD.h * Number(scale)) / 100;
+  const [mode, setMode] = useState("two"); // two photos | one photo with both sides
+  const [stored, setLook] = useStoredState("id-card:look", LOOK_DEFAULTS, validLook);
+  const look = { ...LOOK_DEFAULTS, ...stored };
+  const setL = (patch) => setLook((s) => ({ ...LOOK_DEFAULTS, ...s, ...patch }));
   const aspect = ID_CARD.w / ID_CARD.h;
 
-  const items = useMemo(() => {
-    const sides = [
-      ["front", "Front", front],
-      ["back", "Back", back],
-    ].filter(([, , v]) => v);
+  // Clearer print is worked out once per card side (not for every copy).
+  const sig = `${look.level}|${look.grey}|${look.brightness}|${look.contrast}`;
+  const frontClear = useMemo(
+    () => (front ? enhanceScan(front.image.img, look) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [front, sig],
+  );
+  const backClear = useMemo(
+    () => (back ? enhanceScan(back.image.img, look) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [back, sig],
+  );
+
+  const cards = useMemo(() => {
     const list = [];
-    for (let i = 0; i < copies; i++) {
-      sides.forEach(([id, label, side], j) => {
-        list.push({
-          // Same key for every copy of a side → drawn once, reused.
-          key: `${id}|${w}|${rounded}|${grey}|${clear}|${side.image.url}|${JSON.stringify(side.edit)}`,
-          label,
-          wMm: w,
-          hMm: h,
-          copies: 1,
-          newRow: j === 0 || arrange === "stack",
-          draw: (pxPerMm) => drawCard(side, w * pxPerMm, h * pxPerMm, rounded, grey, clear),
-        });
+    const add = (side, label, value, clear) => {
+      if (!value) return;
+      list.push({
+        side,
+        label,
+        key: `${side}|${value.image.url}|${sig}|${look.rounded}`,
+        // Drawn at the photo's own resolution (1600 px wide ≈ 475 DPI at real size); the page scales it to the card size.
+        draw: () => drawCard(clear, clear.width, clear.height, look.rounded),
       });
-    }
+    };
+    add("front", "Front", front, frontClear);
+    add("back", "Back", back, backClear);
     return list;
-  }, [front, back, copies, w, h, arrange, rounded, grey, clear]);
+  }, [front, back, frontClear, backClear, sig, look.rounded]);
+
+  const fromOnePhoto = async (files) => {
+    try {
+      const photo = await loadImage(files[0]);
+      const { cards: found, found: ok } = findTwoCards(photo.img);
+      if (ok && found.length === 2) {
+        setFront(cardValue(photo, found[0], aspect, 1600, true));
+        setBack(cardValue(photo, found[1], aspect, 1600, true));
+        toast("Both sides found. Check them below — use Swap if front and back are the wrong way round.");
+      } else {
+        setFront(cardValue(photo, found[0], aspect, 1600, false));
+        setBack(null);
+        toast("Only one card was found. Add the back as its own photo, or fix the corners.", "error");
+      }
+      setMode("two");
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  };
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,420px)] xl:grid-cols-[minmax(0,1fr)_minmax(0,480px)]">
+    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,420px)] xl:grid-cols-[minmax(0,1fr)_minmax(0,500px)]">
       <div className="min-w-0 space-y-6">
+        <Card className="space-y-4 p-5">
+          <Segmented
+            size="sm"
+            options={[
+              { value: "two", label: "Front and back — separate photos" },
+              { value: "one", label: "Both sides in one photo" },
+            ]}
+            value={mode}
+            onChange={setMode}
+          />
+          {mode === "one" ? (
+            <FileDrop
+              onFiles={fromOnePhoto}
+              title="Drop one photo with both sides of the card"
+              hint="Put the front and the back on a plain, darker table (side by side or one above the other) and take one photo from above."
+              listenPaste={false}
+            />
+          ) : null}
+        </Card>
+
         <div className="grid gap-6 md:grid-cols-2">
           <Card className="min-w-0 p-5">
             <Step n={1} title="Front side">
@@ -101,57 +135,58 @@ export function IdCardPrintTool() {
             </Step>
           </Card>
         </div>
-        <p className="text-sm text-muted">
-          Take the photo from above with the card on a plain, darker table — the card is found, flattened and cut to its
-          exact size. This prints the customer's own card for photocopy or lamination; it does not change any details on it.
-        </p>
+        {front && back ? (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setFront(back);
+              setBack(front);
+            }}
+          >
+            <ArrowLeftRight className="h-4 w-4" /> Swap front and back
+          </Button>
+        ) : null}
+
+        <Card className="space-y-4 p-5">
+          <p className="text-sm font-semibold text-ink-900">Print quality</p>
+          <Field label="Make the card clearer">
+            <Segmented size="sm" options={enhanceLevels} value={look.level} onChange={(level) => setL({ level })} />
+          </Field>
+          <div className="grid gap-x-5 gap-y-3 sm:grid-cols-2">
+            <Slider
+              label="Brightness"
+              value={look.brightness}
+              min={-50}
+              max={50}
+              defaultValue={0}
+              onChange={(brightness) => setL({ brightness })}
+            />
+            <Slider
+              label="Contrast"
+              value={look.contrast}
+              min={-50}
+              max={50}
+              defaultValue={0}
+              onChange={(contrast) => setL({ contrast })}
+            />
+          </div>
+          <div className="flex flex-wrap gap-x-5 gap-y-2">
+            <Checkbox label="Rounded corners" checked={look.rounded} onChange={(e) => setL({ rounded: e.target.checked })} />
+            <Checkbox label="Black & white" checked={look.grey} onChange={(e) => setL({ grey: e.target.checked })} />
+          </div>
+          <p className="flex gap-2 text-xs text-muted">
+            <Images className="h-4 w-4 shrink-0" />
+            Take the photo from above with the card on a plain, darker table — the card is found, flattened and cut to its exact
+            size. This prints the customer's own card for photocopy or lamination; it does not change any details on it.
+          </p>
+        </Card>
       </div>
 
       <div className="min-w-0">
         <Card className="space-y-5 p-5 lg:sticky lg:top-6">
-          <Step n={3} title="Layout and print">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Print size" htmlFor="id-scale" className="sm:col-span-2">
-                <Select id="id-scale" value={scale} onChange={(e) => setScale(e.target.value)}>
-                  {scales.map((s) => (
-                    <option key={s.value} value={s.value}>
-                      {s.label}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-              <Field label="Front and back">
-                <Segmented
-                  size="sm"
-                  options={[
-                    { value: "side", label: "Side by side" },
-                    { value: "stack", label: "One above other" },
-                  ]}
-                  value={arrange}
-                  onChange={setArrange}
-                />
-              </Field>
-              <Field label="Copies">
-                <Stepper value={copies} onChange={setCopies} min={1} max={20} label="copies" />
-              </Field>
-            </div>
-            <div className="flex flex-wrap gap-x-5 gap-y-2">
-              <Checkbox label="Rounded corners" checked={rounded} onChange={(e) => setRounded(e.target.checked)} />
-              <Checkbox label="Black & white" checked={grey} onChange={(e) => setGrey(e.target.checked)} />
-              <Checkbox label="Clearer print" checked={clear} onChange={(e) => setClear(e.target.checked)} />
-            </div>
-            <SheetPanel
-              items={items}
-              fileName="id-card"
-              showNewRow={false}
-              defaultMargin={10}
-              defaultGap={4}
-              papers={["a4", "a5", "letter", "legal"]}
-              defaultPosition="center"
-              rememberKey="id-card"
-              emptyText="Add the front of the card to see the page."
-              unit="card side"
-            />
+          <Step n={3} title="Page and print">
+            <CardPageLayout cards={cards} cardW={ID_CARD.w} cardH={ID_CARD.h} rememberKey="id-card" fileName="id-card" />
           </Step>
         </Card>
       </div>
