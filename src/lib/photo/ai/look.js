@@ -3,8 +3,9 @@
 // light and colour, face touch-up (retouch.js), spot-fix brush, clarity, sharpening, tighter edges,
 // background blur, and erase / restore brush strokes on the mask.
 // renderPortrait() draws the result; results are cached per portrait, and a small "preview" copy keeps sliders smooth.
+import { applyAdjust, compileAdjust, isDefaultAdjust } from "../adjust";
 import { makeCanvas } from "../image";
-import { blurBehind, clarity, denoise, fillOutside, heal, retouchFace } from "./retouch";
+import { applyBrushes, blurBehind, clarity, denoise, fillOutside, heal, retouchFace } from "./retouch";
 import { toneCurvePixel, toneTables } from "./tone";
 
 /**
@@ -36,17 +37,20 @@ export const defaultLook = Object.freeze({
   sharpen: 0,
   edge: 0,
   bgBlur: 0,
+  adj: null, // Photoshop-style adjustments (../adjust.js): Exposure, Levels, Curves, Color Balance, Hue/Saturation
 });
 
-export const isDefaultLook = (l) => !l || Object.keys(defaultLook).every((k) => !l[k]);
+export const isDefaultLook = (l) => !l || Object.keys(defaultLook).every((k) => (k === "adj" ? isDefaultAdjust(l.adj) : !l[k]));
 
 /** One-tap "make it better" for dull phone photos (light & colour tab). */
 export const enhanceLook = Object.freeze({ clarity: 14, vibrance: 8, shadows: 12, highlights: 12, denoise: 30, sharpen: 20 });
 
 /**
- * @typedef {{ mode: "erase" | "restore" | "heal", r: number, pts: number[] }} Stroke
+ * @typedef {{ mode: "erase" | "restore" | "heal" | "clone" | "dodge" | "burn", r: number, pts: number[],
+ *   dx?: number, dy?: number, s?: number }} Stroke
  * r and pts (x, y, x, y, …) are in pixels of the full-size portrait.
- * erase / restore paint on the background mask; heal is the spot-fix brush (fills from the colours around it).
+ * erase / restore paint on the background mask; heal = Spot Healing (fills from the colours around it);
+ * clone = Clone Stamp (copies from dx, dy away); dodge / burn lighten / darken (s = strength 0…1).
  */
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
@@ -138,8 +142,9 @@ function smallData(p) {
 function build(p, d, { keepBackground, fix, look, strokes }) {
   const { W, H, src, fg, tone, scale } = d;
   const n = W * H;
-  const maskStrokes = strokes.filter((s) => s.mode !== "heal");
+  const maskStrokes = strokes.filter((s) => s.mode === "erase" || s.mode === "restore");
   const healStrokes = strokes.filter((s) => s.mode === "heal");
+  const brushStrokes = strokes.filter((s) => s.mode === "clone" || s.mode === "dodge" || s.mode === "burn");
   const blurBg = keepBackground && look.bgBlur > 0;
 
   // 1. Mask: tighter edges, then brush strokes.
@@ -207,6 +212,8 @@ function build(p, d, { keepBackground, fix, look, strokes }) {
   } else {
     rgb = colour(keepBackground ? src : fg);
   }
+  // Photoshop-style adjustments (Exposure → Levels → Curves → Color Balance → Hue/Saturation).
+  applyAdjust(rgb, n, compileAdjust(look.adj));
   // Kept background: corners that were outside the original photo get the colours next to them.
   const filled = keepBackground && fillOutside(rgb, src, W, H);
 
@@ -214,6 +221,7 @@ function build(p, d, { keepBackground, fix, look, strokes }) {
   if (look.denoise > 0) denoise(rgb, W, H, look.denoise / 100, Math.max(1, Math.round(2 * scale + 0.5)));
   if (healStrokes.length) heal(rgb, W, H, healStrokes, scale);
   if (p.face?.pts) retouchFace(rgb, W, H, scaledFace(p, d), look);
+  if (brushStrokes.length) applyBrushes(rgb, W, H, brushStrokes, scale);
 
   // 4. Clarity and sharpening — help small prints look crisp.
   if (look.clarity) clarity(rgb, W, H, look.clarity / 100, Math.max(W, H) * 0.012);

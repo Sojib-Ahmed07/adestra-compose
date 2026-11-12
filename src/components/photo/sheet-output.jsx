@@ -54,7 +54,11 @@ export function SheetOutput({
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const pxPerMm = Math.min((previewW * dpr) / paper.w, 8);
       const cache = new Map();
-      setPreviews(pages.slice(0, 6).map((p) => renderPage(p, paper, pxPerMm, { cutLines, cache }).toDataURL("image/jpeg", 0.85)));
+      setPreviews(
+        pages
+          .slice(0, 6)
+          .map((p) => renderPage(p, paper, pxPerMm, { cutLines, cache, preview: true }).toDataURL("image/jpeg", 0.85)),
+      );
     }, 120);
     return () => clearTimeout(t);
   }, [pages, previewW, cutLines, paper, empty, hidePreview]);

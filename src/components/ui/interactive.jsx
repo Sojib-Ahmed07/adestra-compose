@@ -30,7 +30,7 @@ export function Segmented({ options, value, onChange, className, size = "md" }) 
 }
 
 /** Labelled range slider. Double-click the label to reset. */
-export function Slider({ label, value, onChange, min, max, step = 1, unit = "", defaultValue }) {
+export function Slider({ label, value, onChange, min, max, step = 1, unit = "", defaultValue, digits }) {
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between text-xs">
@@ -43,7 +43,7 @@ export function Slider({ label, value, onChange, min, max, step = 1, unit = "", 
           {label}
         </button>
         <span className="tabular text-muted">
-          {Number.isInteger(step) ? value : value.toFixed(1)}
+          {digits != null ? value.toFixed(digits) : Number.isInteger(step) ? value : value.toFixed(1)}
           {unit}
         </span>
       </div>

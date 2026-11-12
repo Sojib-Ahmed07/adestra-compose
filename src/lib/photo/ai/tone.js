@@ -1,6 +1,8 @@
 // src/lib/photo/ai/tone.js
 // Automatic light and colour for portraits (browser or Node — plain arrays only).
-// 1. White balance from the face's skin (a coloured wall or shirt can't fool it), gently and within limits.
+// Rule: "do no harm". The automatic fix only takes away a clear colour cast and dullness; it never adds colour.
+// 1. White balance from the face's skin, gently: only removes a cast (hue moved a little, colour strength only ever
+//    reduced, never increased — so pale or flash-lit faces can't turn yellow/orange).
 // 2. A small levels stretch measured on the person, not the background.
 // 3. Exposure set from the face's brightness — done on brightness only, so colours stay rich instead of washed out.
 // 4. A soft S-curve (gives back "punch") and a little vibrance (boosts dull colours more than strong ones).
@@ -65,8 +67,8 @@ export function analyseTone(src, alpha, W, H, face) {
         return 255;
     };
     // Stretch dull, flat photos (a dim shop light) most of the way, but never by a huge amount.
-    const lo = count ? Math.round(Math.min(pct(0.004), 40) * 0.8) : 0;
-    const hi = count ? Math.round(255 - (255 - Math.max(pct(0.996), 165)) * 0.8) : 255;
+    const lo = count ? Math.round(Math.min(pct(0.004), 35) * 0.7) : 0;
+    const hi = count ? Math.round(255 - (255 - Math.max(pct(0.996), 175)) * 0.7) : 255;
 
     // Skin sample: cheeks, nose and mouth area.
     const skin = face ? sampleSkin(src, alpha, W, H, face) : null;
@@ -89,10 +91,10 @@ export function analyseTone(src, alpha, W, H, face) {
     if (skin && skin.n > 50) {
         const y = clamp((lum(skin.r * gain[0], skin.g * gain[1], skin.b * gain[2]) - lo) / Math.max(1, hi - lo), 0.04, 0.96);
         // Comfortable band for a passport face: only faces outside it are moved (to its edge).
-        const target = clamp(y, 0.48, 0.66);
-        gamma = clamp(Math.log(target) / Math.log(y), 0.55, 1.45);
+        const target = clamp(y, 0.47, 0.7);
+        gamma = clamp(Math.log(target) / Math.log(y), 0.72, 1.3);
     }
-    const contrast = 0.14; // soft S-curve strength
+    const contrast = 0.07; // soft S-curve strength
     const curve = new Float32Array(1021);
     for (let i = 0; i < curve.length; i++) {
         let x = i / 4 / 255;
@@ -100,7 +102,7 @@ export function analyseTone(src, alpha, W, H, face) {
         x = sCurve(x, contrast); // leaves 0, 0.5 and 1 in place
         curve[i] = clamp(x, 0, 1) * 255;
     }
-    return { gain, lo, hi, curve, vibrance: skin ? 0.14 : 0.08 };
+    return { gain, lo, hi, curve, vibrance: 0 };
 }
 
 /** Smooth S-curve: blend towards a smoothstep around the middle. */
@@ -156,22 +158,28 @@ function skinBalance(r, g, b) {
     if (Y < 8) return [1, 1, 1];
     const cb = (-0.168736 * r - 0.331264 * g + 0.5 * b) / Y;
     const cr = (0.5 * r - 0.418688 * g - 0.081312 * b) / Y;
-    // Natural skin: hue around atan2(0.18, −0.145), strength 0.15–0.30 of brightness.
+    // Natural skin hue is around atan2(0.18, −0.145).
     const tHue = Math.atan2(0.18, -0.145);
     const hue = Math.atan2(cr, cb);
     let dh = tHue - hue;
     while (dh > Math.PI) dh -= 2 * Math.PI;
     while (dh < -Math.PI) dh += 2 * Math.PI;
     const mag = Math.hypot(cb, cr);
-    const newHue = hue + clamp(dh, -0.7, 0.7) * 0.9;
-    const newMag = clamp(mag, 0.15, 0.25) * 0.85 + mag * 0.15;
+    // Small hue moves only (a strong "wrong" hue is more likely odd light on one side than a real cast).
+    const newHue = hue + clamp(dh, -0.4, 0.4) * 0.7;
+    // Never add colour; only calm down skin that is clearly too orange / yellow / red.
+    const newMag = mag > 0.24 ? 0.24 + (mag - 0.24) * 0.5 : mag;
     const tcb = Math.cos(newHue) * newMag * Y;
     const tcr = Math.sin(newHue) * newMag * Y;
     const tr = Y + 1.402 * tcr;
     const tg = Y - 0.344136 * tcb - 0.714136 * tcr;
     const tb = Y + 1.772 * tcb;
-    const strength = 0.85;
-    return [tr / r, tg / g, tb / b].map((k) => clamp(1 + (k - 1) * strength, 0.7, 1.5));
+    const strength = 0.8;
+    const gains = [tr / r, tg / g, tb / b].map((k) => clamp(1 + (k - 1) * strength, 0.86, 1.16));
+    // Keep brightness the same (gains only change colour).
+    const before = 0.299 * r + 0.587 * g + 0.114 * b;
+    const after = 0.299 * r * gains[0] + 0.587 * g * gains[1] + 0.114 * b * gains[2];
+    return gains.map((k) => k * (before / Math.max(1, after)));
 }
 
 /**

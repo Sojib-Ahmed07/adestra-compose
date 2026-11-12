@@ -739,3 +739,90 @@ export function fillOutside(rgb, src, W, H) {
     }
     return true;
 }
+
+/**
+ * Photoshop-style brushes, applied in the order they were painted (in place):
+ *   clone — Clone Stamp: copies from `dx, dy` away (set with Alt+click), soft edge
+ *   dodge — lightens where painted, burn — darkens where painted (`s` = strength 0…1)
+ * @param {{ mode: string, r: number, pts: number[], dx?: number, dy?: number, s?: number }[]} strokes  full-size pixels
+ * @param {number} scale rgb pixels per full-size pixel
+ */
+export function applyBrushes(rgb, W, H, strokes, scale = 1) {
+    for (const st of strokes) {
+        const r = Math.max(1, st.r * scale);
+        const P = st.pts;
+        let x0 = Infinity,
+            y0 = Infinity,
+            x1 = -Infinity,
+            y1 = -Infinity;
+        for (let k = 0; k < P.length; k += 2) {
+            x0 = Math.min(x0, P[k] * scale);
+            x1 = Math.max(x1, P[k] * scale);
+            y0 = Math.min(y0, P[k + 1] * scale);
+            y1 = Math.max(y1, P[k + 1] * scale);
+        }
+        const pad = r * 1.6 + 2;
+        const rx = Math.max(0, Math.floor(x0 - pad));
+        const ry = Math.max(0, Math.floor(y0 - pad));
+        const w = Math.min(W, Math.ceil(x1 + pad)) - rx;
+        const h = Math.min(H, Math.ceil(y1 + pad)) - ry;
+        if (w < 1 || h < 1) continue;
+        // Soft round brush: hard stamps, then feathered.
+        let mask = new Float32Array(w * h);
+        const hard = r * 0.75;
+        const stamp = (cx, cy) => fillEllipse(mask, w, h, cx - rx, cy - ry, hard, hard);
+        stamp(P[0] * scale, P[1] * scale);
+        for (let k = 2; k < P.length; k += 2) {
+            const ax = P[k - 2] * scale,
+                ay = P[k - 1] * scale,
+                bx = P[k] * scale,
+                by = P[k + 1] * scale;
+            const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / (hard * 0.4)));
+            for (let t = 1; t <= steps; t++) stamp(ax + ((bx - ax) * t) / steps, ay + ((by - ay) * t) / steps);
+        }
+        mask = soft(mask, w, h, Math.max(1, r * 0.3));
+
+        if (st.mode === "clone") {
+            const dx = Math.round((st.dx || 0) * scale);
+            const dy = Math.round((st.dy || 0) * scale);
+            // Source area as it was before this stroke.
+            const copy = new Float32Array(w * h * 3);
+            for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                    const sx = clamp(x + rx + dx, 0, W - 1);
+                    const sy = clamp(y + ry + dy, 0, H - 1);
+                    const q = (sy * W + sx) * 3;
+                    const o = (y * w + x) * 3;
+                    copy[o] = rgb[q];
+                    copy[o + 1] = rgb[q + 1];
+                    copy[o + 2] = rgb[q + 2];
+                }
+            }
+            for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                    const m = mask[y * w + x];
+                    if (m < 0.003) continue;
+                    const j = ((y + ry) * W + x + rx) * 3;
+                    const o = (y * w + x) * 3;
+                    for (let c = 0; c < 3; c++) rgb[j + c] = rgb[j + c] + (copy[o + c] - rgb[j + c]) * m;
+                }
+            }
+        } else if (st.mode === "dodge" || st.mode === "burn") {
+            const s = clamp(st.s ?? 0.3, 0, 1);
+            const up = st.mode === "dodge";
+            for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                    const m = mask[y * w + x] * s;
+                    if (m < 0.002) continue;
+                    const j = ((y + ry) * W + x + rx) * 3;
+                    const L = lum(rgb[j], rgb[j + 1], rgb[j + 2]);
+                    if (L < 0.5) continue;
+                    // Dodge: like Photoshop's Dodge on mid-tones; burn the opposite. Colours scale together (no grey wash).
+                    const nl = up ? L + (255 - L) * 0.45 * m * (1 - L / 400) : L * (1 - 0.4 * m);
+                    const k = nl / L;
+                    for (let c = 0; c < 3; c++) rgb[j + c] = clamp(rgb[j + c] * k, 0, 255);
+                }
+            }
+        }
+    }
+}

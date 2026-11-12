@@ -7,7 +7,7 @@
 > create or change, list any `npm install` / `db:push` / env changes, and ask for the current contents of any file you need
 > to edit that you haven't been shown. **Never guess what an existing file contains.**
 
-Last updated: **11 Nov 2026**, after the photo quality update (new auto colour, face touch-up, spot fix, joint photo soft join, NID page layout).
+Last updated: **12 Nov 2026**, after the Photoshop-style editor + grid sheet update (safe auto colour, Adjustments, brushes, undo, 5 × 5 cutting grid, stamps sharing a passport space).
 
 ---
 
@@ -100,7 +100,19 @@ npm run format                    # Prettier (printWidth 130)
     `{ zoom, x, y, rotate, turn, flip, brightness, contrast, saturation }`; x/y are fractions of the frame, so the same edit
     renders identically at preview size and at 300 DPI. `previewSource` downsizes big photos for smooth previews.
   - `sizes.js` — `photoSizes`, `paperSizes`, `ID_CARD`, `PX_PER_MM` (300 DPI).
-  - `sheet.js` — `layoutSheet(items, paper, { margin, gap, newRowPerItem, position })` (row packing, multi-page; `position`
+  - `sheet.js` — **`layoutGrid`** (default, "Grid — easy cutting"): same-size cells in rows × columns; spare paper shared out
+    as cutting space to the page corners (`spread`); small sizes share a cell (`pair`: up to kx × ky copies when they fit the
+    main photo's width and ≤ 15% more height → 2 stamps 20 × 25 = one 38 × 53 cell, so A4 = 5 × 5 and "4 passport + 2 stamp"
+    or "3 passport + 4 stamp" is one row); `cols` / `rows` limits; `item.group` keeps one customer's sizes together;
+    pages carry `page.guides` (lines across the page above/below each row + short lines between cells) that `renderPage`
+    draws first when cutting lines are on. `layoutFor(opts)` picks grid or pack (`opts.mode`). SheetPanel settings are
+    saved under `sheet2:<key>` (defaults page edge 4 mm, space left–right `gapX` 3 mm and up–down `gapY` 3 mm — minimums when
+    spread). **Reusing a sheet:** `opts.used` = areas of page 1 already printed on (`{ x, y, w, h }` mm); any space touching one
+    is skipped, so it still works when the next customer needs other sizes. SheetPanel's `ReuseSheet` map: tap spaces, or
+    "Printed — mark as used" (adds `page.spaces` of page 1), "New sheet" clears; kept in localStorage, dropped when the paper
+    or its direction changes. `grid.spaces` lists page 1's spaces with `used`; `renderPage(..., { preview: true })` shades used
+    areas (never printed).
+    `layoutSheet(items, paper, { margin, gap, newRowPerItem, position })` ("Pack tight": row packing, multi-page; `position`
     top-left | top | center shifts each page's block) and `renderPage`. `roomOnLastPage(items, paper, opts)` → how many more of
     the last item with `setCopies` fit without a new page (SheetPanel's "Fill the page"). SheetOutput: **Ctrl+P prints the
     sheet** (not the web page).
@@ -111,6 +123,11 @@ npm run format                    # Prettier (printWidth 130)
   - `signature.js` — `cleanSignature(canvas, { strength, ink })`.
   - `image.js` also has `drawEdit(ctx, img, edit, box, fit)` — same drawing into part of an existing canvas without clearing or
     clipping (joint photos let cut-outs overlap).
+  - `adjust.js` — Photoshop-style adjustments (pure arrays): `look.adj` = `{ exposure, levels, curves, balance, hsl }`
+    (see file header; missing parts = no change). Fixed order Exposure → Levels → Curves → Color Balance (GIMP-style tone
+    weights, preserve luminosity) → Hue/Saturation (master + 6 colour ranges, ±15° full / ±45° fade). `compileAdjust` →
+    `applyAdjust(rgb, n, c)`; `histogram(rgba)`; `autoTone` (per-channel 0.1% clip), `autoContrast` (one black/white point),
+    `autoColor` (dark/light colours + neutral mid-tones gamma 0.8–1.25); `curveTable` (monotone cubic).
   - `card.js` — `findCardCorners(img)` (colour vs table → biggest region → biggest 4-sided shape; `found:false` = whole photo
     inset), `findTwoCards(img)` (front + back in one photo: two biggest regions, or one region split in two card-shaped halves;
     reading order) and `warpQuad(img, corners, w, h)` (perspective flatten; turns a standing card to landscape).
@@ -132,6 +149,9 @@ npm run format                    # Prettier (printWidth 130)
     `headSizes` small/normal/large = head 55/63/73% of height. `cutoutWhole(img)` = whole-photo cut-out (remove-bg tool).
     Throws `NoFaceError` → UI offers "Crop by hand". Falls back to finding the person first when the face is too small.
     The returned portrait also has `data` = `{ W, H, src, fg, alpha, tone }` (raw pixels for the editor).
+  - **Auto colour rule (12 Nov): "do no harm".** The skin white balance only moves the hue a little (≤ ±0.4 rad × 0.7) and
+    **never increases colour strength** (only calms skin above 0.24); gains 0.86–1.16 and brightness kept; no auto vibrance;
+    S-curve 0.07; gamma 0.72–1.3. The old version boosted pale / flash faces to yellow — don't loosen these limits.
   - `tone.js` — automatic light & colour (pure arrays, also runs in Node). `analyseTone(src, alpha, W, H, face|null)` →
     `Tone { gain, lo, hi, curve, vibrance }`: white balance from the **face skin** (moves skin towards a natural skin hue,
     gains 0.7–1.5), levels on the person (stretches dull photos up to 80%), exposure only when the face is outside 48–66%
@@ -148,15 +168,20 @@ npm run format                    # Prettier (printWidth 130)
     automatic result. `look` = `defaultLook` keys: brightness/contrast/shadows/highlights/saturation/vibrance/warmth/tint/clarity
     (−100…100), denoise, the retouch keys, sharpen, edge, bgBlur (0…100). `enhanceLook` = the "One-tap enhance" values.
     Order: mask (edge + erase/restore strokes) → tone → manual tables → (bgBlur: person from `fg` over blurred `src`) →
-    `fillOutside` → denoise → heal strokes → retouchFace → clarity → sharpen.
+    `applyAdjust(look.adj)` → `fillOutside` → denoise → heal strokes → retouchFace → clone/dodge/burn (`applyBrushes`) →
+    clarity → sharpen.
     `strokes` = `[{ mode: "erase"|"restore"|"heal", r, pts: [x,y,…] }]` in full-portrait pixels (erase/restore paint the mask,
-    heal = spot fix). Results cached on the portrait (last 6). `preview: true` works on an ~800 px copy; print uses full size.
+    heal = spot fix; clone {dx, dy} = Clone Stamp offset; dodge / burn {s} = strength 0…1). Results cached on the portrait (last 6). `preview: true` works on an ~800 px copy; print uses full size.
 - **Photo components** (`src/components/photo/`): `CropEditor` (drag/wheel/arrow keys, straighten, colour; `background` prop),
   `PhotoSlot` (upload → CropEditor), `SheetPanel` (paper settings + `SheetOutput`; `rememberKey` saves paper settings in
   localStorage, `printId` puts an id on the Print button), `SheetOutput` (preview + Print / PDF / JPG), `BgPicker` (colour
   swatches + any colour + "Keep original" = `KEEP`), `usePortraits()` (list of photos processed one at a time: statuses queued →
   face → background → colour → done | error | manual; per person `edits` keyed by size, `look`, `strokes`/`strokesRev`, own `bg`,
-  own `fix`, own `copies` per order row), `PersonCard`, `PassportEditor` (tabs Position · Light & colour · Face touch-up · Background;
+  own `fix`, own `copies` per order row), `PersonCard`, `PassportEditor` (tabs Position · Quick fix · Adjustments (`AdjustPanel`, adjust-panel.jsx: Auto Tone/Contrast/Color,
+  Exposure, Levels with histogram + handles, Curves with draggable points + presets, Color Balance, Hue/Saturation) ·
+  Retouch (auto touch-up + brushes Spot healing / Clone stamp (Alt+click or "Pick source") / Dodge / Burn, `[` `]` size) ·
+  Background; undo/redo history of `{ look, strokes, edits, fix, bg }` with Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y, quick repeats
+  merged;
   props `baseLook` (tool-wide touch-up level; the photo's own `look` holds only what was changed on top), `allowOwnBg`,
   `showCopies`; sliders keep a local copy and commit after 250 ms; brush maps screen → portrait with the inverse of `drawEdit`;
   Face tab = zoomed on the face (`zoomToFace`) with the spot-fix brush and hold-to-compare; used by auto passport **and** joint
@@ -274,7 +299,7 @@ src/
     shell/     app-shell (sidebar + mobile menu), tool-hub, tool-icon, login-form
     settings/  settings-view
     photo/     crop-editor, photo-slot, sheet-panel, sheet-output, bg-picker, use-portraits.js, person-card, card-slot,
-               card-page, passport-editor
+               card-page, passport-editor, adjust-panel
     pdf/       pdf-bits (PdfPicker, usePdfjsDoc, useRenderDocs, PageThumb, ResultFiles, useJob)
     accounts/  bits (MoneyInput, PartyPicker, useQueryState, RangePicker, Pager, Stat), sale-form (+ partyPayload),
                expense-form, entry-table, entry-filters, void-button, party-forms (PartyFormButton, PaymentForm,
@@ -282,7 +307,7 @@ src/
     print/     paper (Paper, ShopHeading, receiptSizes), print-bar, print-button
     tools/     one client component per tool (same names as the slugs)
   lib/         tools.js (registry: groups + tools), utils.js, age.js, number-words.js, zip.js, clipboard.js, accounts.js,
-               use-stored.js, photo/ (sizes, image, sheet, export, signature, card, enhance, ai/ (faces, matte, portrait, tone, retouch, look)), pdf/ (engine, ops, images, raster, stamp),
+               use-stored.js, photo/ (sizes, image, sheet, export, signature, card, enhance, adjust, ai/ (faces, matte, portrait, tone, retouch, look)), pdf/ (engine, ops, images, raster, stamp),
                bangla/ (convert, avro, ocr)
   db/          schema.js, index.js, url.js, add-user.js (`npm run user:add`)
   server/      auth.js, session.js (getCurrentUser, requireUser, requireOwner, getOwner, safeNext), errors.js,
@@ -356,6 +381,8 @@ Schema change → edit `schema.js`, tell the owner to run `npm run db:push`, upd
 
 | Date | Change | Next |
 | --- | --- | --- |
+| 2026-11-12 | **Reuse a sheet + separate spacing.** Grid sheets: space left–right and up–down set separately. "Reuse this sheet": mark the spaces already printed (tap the map, or "Printed — mark as used" after printing), the next print fills only the free spaces; works across different sizes; "New sheet" clears. No new packages, no DB change. | Batch 5 when the owner sends his templates |
+| 2026-11-12 | **Photoshop-style editing + cutting grid.** Auto colour made safe (never adds colour — fixes "skin turns yellow"). Editor tabs: Quick fix · **Adjustments** (Auto Tone / Auto Contrast / Auto Color, Exposure, Levels, Curves, Color Balance, Hue/Saturation with colour ranges) · **Retouch** (Spot healing, Clone stamp, Dodge, Burn, `[` `]`) · **Undo / Redo** (Ctrl+Z, Ctrl+Shift+Z). Sheets: new **Grid — easy cutting** layout (default): A4 = 5 × 5 passport, cutting space spread to the corners, cutting guides across the page, **2 stamps share one passport space**, photos per row / rows per page; old layout = "Pack tight". Auto passport: presets 5 passport, 4 passport + 2 stamp, 3 passport + 4 stamp, 25 passport; each customer's sizes stay on their row; default paper A4. No new packages, no DB change. | Batch 5 when the owner sends his templates |
 | 2026-11-11 | **Photo quality update.** New automatic colour (white balance from the face skin, dull photos stretched, exposure on brightness only so colours stay rich). **Face touch-up** (Off / Natural / Studio / Strong for all photos + per-photo sliders: remove spots, smooth skin, even colour, shine, under-eye, eyes, teeth, face light) and a **spot-fix brush** (zoomed on the face); never reshapes the face. Light tab: One-tap enhance, highlights, clarity, vibrance, tint, reduce grain. Background: blur the kept background, empty corners filled. **Joint photo**: full editor per person (position, light, touch-up, brush), keep own backgrounds with **soft join + blur in the middle** (people stay sharp), blur backgrounds, closeness 55–115 %, 4R size. **NID**: page layout with drag / resize / snap to middle, any size 40–260 %, fill half page / width, sets per page + Fill the page, back on next page (two-sided), both sides from one photo (+ swap), Clearer / Extra clear print, brightness/contrast. No new packages, no DB change. | Batch 5 when the owner sends his templates; photo-sheet (manual crop) could get the same auto colour |
 | 2026-11-10 | **Photo editor update.** Auto passport: full **Edit** panel per photo — Position (drag/zoom/straighten, head smaller/bigger, back to automatic, copies of this photo), Light & colour (auto fix on/off, brightness, contrast, lighten shadows, colour, warm/cool, hold to compare, use on all photos), Touch-up (smooth skin on the face only, sharpen), Background (own colour per photo, tighter edges, erase / bring-back brush with undo). One-tap order chips (4 passport, 4 passport + 4 stamp…), "Next customer" button, click a thumbnail to edit. All sheets: **Place on the page** (top left / top centre / middle), **Fill the page** (adds the copies that still fit), **Ctrl+P** prints the photos. NID: front and back in the middle of the page by default, one above the other, "Clearer print", settings remembered. No new packages, no DB change. | Batch 5 when the owner sends his templates |
 | 2026-11-10 | **Photo batch (AI photo, offline).** New **Auto passport photo**: drop photos → face found, eyes levelled, head sized and centred, background removed (any colour or keep), light/colour fixed → print sheet ready, Print focused; order several sizes per photo (e.g. 4 passport + 4 stamp); per-photo Adjust / Back to automatic / Crop by hand; settings and paper remembered. **Joint photo** rebuilt: 2–4 people, auto cut-out, same head size, one background, closeness slider, reorder. **NID / ID card print**: phone photo → card corners found → flattened to exact card size (corner editor, turn 180°). New **Remove background** (PNG or colour, ZIP). New packages: onnxruntime-web, @mediapipe/face_mesh, @dloizides/background-removal (MODNet model). No DB change. | Batch 5 when the owner sends his deed/CV templates |

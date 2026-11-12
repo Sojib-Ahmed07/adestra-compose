@@ -2,12 +2,14 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Brush, Eraser, Eye, RotateCcw, Sparkles, Undo2, Wand2, ZoomIn } from "lucide-react";
+import { Brush, Crosshair, Eraser, Eye, Moon, Redo2, RotateCcw, Sparkles, Stamp, Sun, Undo2, Wand2, ZoomIn } from "lucide-react";
+import { histogram } from "@/lib/photo/adjust";
 import { defaultLook, enhanceLook, renderPortrait } from "@/lib/photo/ai/look";
 import { passportEdit } from "@/lib/photo/ai/portrait";
 import { beautyPresets, retouchKeys } from "@/lib/photo/ai/retouch";
 import { defaultEdit, renderEdit, srcH, srcW } from "@/lib/photo/image";
 import { cn } from "@/lib/utils";
+import { AdjustPanel } from "./adjust-panel";
 import { BgPicker, KEEP } from "./bg-picker";
 import { CropEditor } from "./crop-editor";
 import { Button } from "@/components/ui/button";
@@ -16,10 +18,20 @@ import { Segmented, Slider, Stepper } from "@/components/ui/interactive";
 
 const tabs = [
   { value: "position", label: "Position" },
-  { value: "light", label: "Light & colour" },
-  { value: "face", label: "Face touch-up" },
+  { value: "light", label: "Quick fix" },
+  { value: "adjust", label: "Adjustments" },
+  { value: "face", label: "Retouch" },
   { value: "background", label: "Background" },
 ];
+
+/** Retouch brushes (Photoshop names). */
+const retouchTools = [
+  { value: "heal", label: "Spot healing" },
+  { value: "clone", label: "Clone stamp" },
+  { value: "dodge", label: "Dodge" },
+  { value: "burn", label: "Burn" },
+];
+const isRetouchStroke = (s) => s.mode === "heal" || s.mode === "clone" || s.mode === "dodge" || s.mode === "burn";
 
 const lightKeys = [
   "brightness",
@@ -66,6 +78,29 @@ export function PassportEditor({
   const auto = Boolean(p.portrait);
   const hasFace = Boolean(p.portrait?.face?.pts);
 
+  // History (Ctrl+Z / Ctrl+Shift+Z): every change saves how the photo was before it.
+  const pRef = useRef(p);
+  pRef.current = p;
+  const history = useRef({ undo: [], redo: [], last: 0 });
+  const [, setHistoryRev] = useState(0);
+  const snapshot = () => {
+    const q = pRef.current;
+    return { look: q.look, strokes: q.strokes, edits: q.edits, fix: q.fix, bg: q.bg };
+  };
+  /** Change the photo (merge: quick repeated changes, like dragging, count as one step). */
+  const change = (patch, merge = false) => {
+    const h = history.current;
+    const now = Date.now();
+    if (!(merge && now - h.last < 700)) {
+      h.undo.push(snapshot());
+      if (h.undo.length > 80) h.undo.shift();
+      h.redo = [];
+      setHistoryRev((n) => n + 1);
+    }
+    h.last = now;
+    onChange(patch);
+  };
+
   // Sliders change a local copy (fast preview); the photo itself is updated a moment after you stop.
   const [own, setOwn] = useState(p.look || {});
   useEffect(() => setOwn(p.look || {}), [p.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -74,14 +109,27 @@ export function PassportEditor({
     const next = { ...own, ...patch };
     setOwn(next);
     clearTimeout(commit.current);
-    if (now) onChange({ look: next });
-    else commit.current = setTimeout(() => onChange({ look: next }), 250);
+    if (now) change({ look: next });
+    else commit.current = setTimeout(() => change({ look: next }, true), 250);
   };
   const replaceLook = (next) => {
     clearTimeout(commit.current);
     setOwn(next);
-    onChange({ look: next });
+    change({ look: next });
   };
+  const travel = (from, to) => {
+    const h = history.current;
+    const prev = h[from].pop();
+    if (!prev) return;
+    clearTimeout(commit.current);
+    h[to].push(snapshot());
+    h.last = 0;
+    setOwn(prev.look || {});
+    onChange({ ...prev, strokesRev: (pRef.current.strokesRev || 0) + 1 });
+    setHistoryRev((n) => n + 1);
+  };
+  const undo = () => travel("undo", "redo");
+  const redo = () => travel("redo", "undo");
   useEffect(() => () => clearTimeout(commit.current), []);
   const look = useMemo(() => ({ ...defaultLook, ...baseLook, ...own }), [baseLook, own]);
 
@@ -108,7 +156,7 @@ export function PassportEditor({
 
   const autoEdit = auto ? passportEdit(p.portrait, row.w, row.h, head) : defaultEdit;
   const edit = p.edits[sizeKey] ?? autoEdit;
-  const setEdit = (e) => onChange({ edits: { ...p.edits, [sizeKey]: e } });
+  const setEdit = (e) => change({ edits: { ...p.edits, [sizeKey]: e } }, true);
   const fit = auto ? "contain" : "cover";
 
   const [faceZoom, setFaceZoom] = useState(true);
@@ -117,16 +165,86 @@ export function PassportEditor({
     [auto, faceZoom, edit, p.portrait, row.w, row.h],
   );
 
-  const addStroke = (s) => onChange({ strokes: [...p.strokes, s], strokesRev: (p.strokesRev || 0) + 1 });
-  const undoStroke = (heal) => {
-    const i = p.strokes.findLastIndex((s) => (s.mode === "heal") === heal);
-    if (i < 0) return;
-    onChange({ strokes: p.strokes.filter((_, j) => j !== i), strokesRev: (p.strokesRev || 0) + 1 });
+  // Brushes.
+  const [tool, setTool] = useState("heal");
+  const [clone, setClone] = useState({ src: null, offset: null, picking: false });
+  const retouchSize = p.healSize ?? 2;
+  const strength = p.toneStrength ?? 30;
+  const addStroke = (s) => {
+    if (s.mode === "clone") {
+      if (!clone.src) return;
+      const offset = clone.offset ?? { dx: clone.src.x - s.pts[0], dy: clone.src.y - s.pts[1] };
+      if (!clone.offset) setClone((c) => ({ ...c, offset }));
+      s = { ...s, ...offset };
+    }
+    if (s.mode === "dodge" || s.mode === "burn") s = { ...s, s: strength / 100 };
+    change({ strokes: [...p.strokes, s], strokesRev: (p.strokesRev || 0) + 1 });
   };
-  const clearStrokes = (heal) =>
-    onChange({ strokes: p.strokes.filter((s) => (s.mode === "heal") !== heal), strokesRev: (p.strokesRev || 0) + 1 });
-  const healCount = p.strokes.filter((s) => s.mode === "heal").length;
+  const undoStroke = (retouch) => {
+    const i = p.strokes.findLastIndex((s) => isRetouchStroke(s) === retouch);
+    if (i < 0) return;
+    change({ strokes: p.strokes.filter((_, j) => j !== i), strokesRev: (p.strokesRev || 0) + 1 });
+  };
+  const clearStrokes = (retouch) =>
+    change({ strokes: p.strokes.filter((s) => isRetouchStroke(s) !== retouch), strokesRev: (p.strokesRev || 0) + 1 });
+  const healCount = p.strokes.filter(isRetouchStroke).length;
   const maskCount = p.strokes.length - healCount;
+
+  // Keyboard: Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y, and [ ] for brush size (as in Photoshop).
+  useEffect(() => {
+    const onKey = (e) => {
+      const t = e.target;
+      const typing =
+        t &&
+        (t.tagName === "TEXTAREA" ||
+          t.isContentEditable ||
+          (t.tagName === "INPUT" && !["range", "checkbox", "radio", "button"].includes(t.type)));
+      if (typing) return;
+      const mod = e.ctrlKey || e.metaKey;
+      const k = e.key.toLowerCase();
+      if (mod && k === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+      } else if (mod && k === "y") {
+        e.preventDefault();
+        redo();
+      } else if (!mod && (e.key === "[" || e.key === "]")) {
+        const d = e.key === "]" ? 1 : -1;
+        if (tab === "face") onChange({ healSize: Math.min(12, Math.max(0.5, retouchSize + d * 0.5)) });
+        if (tab === "background") {
+          const b = p.brush ?? { mode: "erase", size: 4 };
+          onChange({ brush: { ...b, size: Math.min(15, Math.max(1, b.size + d)) } });
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  // Histogram + pixels before the Photoshop adjustments (for Levels / Curves and the Auto buttons).
+  const baseRender = useMemo(
+    () =>
+      auto && tab === "adjust"
+        ? renderPortrait(p.portrait, {
+          keepBackground: keep,
+          fix,
+          look: { ...look, adj: null },
+          strokes: p.strokes,
+          strokesRev: p.strokesRev,
+          preview: true,
+        })
+        : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [auto, tab, p.portrait, keep, fix, JSON.stringify({ ...look, adj: null }), p.strokes, p.strokesRev],
+  );
+  const base = useMemo(() => {
+    if (!baseRender) return null;
+    const px = baseRender
+      .getContext("2d", { willReadFrequently: true })
+      .getImageData(0, 0, baseRender.width, baseRender.height).data;
+    return { hist: histogram(px), px };
+  }, [baseRender]);
 
   const slider = (key, label, min, max) => (
     <Slider
@@ -149,6 +267,26 @@ export function PassportEditor({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="min-w-0 truncate text-sm font-semibold text-ink-900">Edit — {p.name}</h3>
         <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={undo}
+            disabled={!history.current.undo.length}
+            title="Undo (Ctrl+Z)"
+            aria-label="Undo"
+          >
+            <Undo2 className="h-4 w-4" />
+          </Button>
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={redo}
+            disabled={!history.current.redo.length}
+            title="Redo (Ctrl+Shift+Z)"
+            aria-label="Redo"
+          >
+            <Redo2 className="h-4 w-4" />
+          </Button>
           {rows.length > 1 ? (
             <Select
               aria-label="Size to edit"
@@ -192,7 +330,7 @@ export function PassportEditor({
                 onClick={() => {
                   const edits = { ...p.edits };
                   delete edits[sizeKey];
-                  onChange({ edits });
+                  change({ edits });
                 }}
               >
                 <Wand2 className="h-4 w-4" /> Back to automatic position
@@ -215,7 +353,7 @@ export function PassportEditor({
               </>
             ) : null}
           </div>
-          {showCopies ? <CopiesEditor p={p} rows={rows} onChange={onChange} /> : null}
+          {showCopies ? <CopiesEditor p={p} rows={rows} onChange={change} /> : null}
         </div>
       ) : (
         <div className="grid gap-5 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
@@ -242,7 +380,10 @@ export function PassportEditor({
                   fill={fill}
                   disabled={false}
                   onStroke={addStroke}
-                  brush={{ mode: "heal", size: p.healSize ?? 2 }}
+                  brush={{ mode: tool, size: retouchSize }}
+                  marker={tool === "clone" && !clone.offset ? clone.src : null}
+                  picking={tool === "clone" && (clone.picking || !clone.src)}
+                  onPick={(q) => setClone({ src: q, offset: null, picking: false })}
                 />
                 <div className="flex justify-center">
                   <button
@@ -271,7 +412,7 @@ export function PassportEditor({
                   <Checkbox
                     label="Auto brightness and colour"
                     checked={fix}
-                    onChange={(e) => onChange({ fix: e.target.checked })}
+                    onChange={(e) => change({ fix: e.target.checked })}
                   />
                 </div>
                 <div className="grid gap-x-5 gap-y-3 sm:grid-cols-2 md:grid-cols-1 xl:grid-cols-2">
@@ -300,10 +441,13 @@ export function PassportEditor({
                 </p>
               </>
             ) : null}
+            {tab === "adjust" ? (
+              <AdjustPanel value={own.adj ?? null} base={base} onChange={(adj, now) => changeLook({ adj }, now)} />
+            ) : null}
             {tab === "face" ? (
               hasFace ? (
                 <>
-                  <Field label="Touch-up level">
+                  <Field label="Automatic face touch-up">
                     <Segmented
                       size="sm"
                       options={Object.entries(beautyPresets).map(([value, pr]) => ({ value, label: pr.label }))}
@@ -323,26 +467,19 @@ export function PassportEditor({
                     {slider("teeth", "Whiter teeth", 0, 100)}
                     {slider("faceLight", "Light on the face", 0, 100)}
                   </div>
-                  <div className="space-y-2 rounded-lg bg-ink-50/60 p-3">
-                    <p className="text-xs font-medium text-ink-700">Spot fix — tap or paint on a spot, mark or stray hair</p>
-                    <Slider
-                      label="Brush size"
-                      value={p.healSize ?? 2}
-                      min={0.5}
-                      max={8}
-                      step={0.5}
-                      defaultValue={2}
-                      onChange={(v) => onChange({ healSize: v })}
-                    />
-                    <div className="flex flex-wrap gap-2">
-                      <Button size="sm" variant="outline" disabled={!healCount} onClick={() => undoStroke(true)}>
-                        <Undo2 className="h-4 w-4" /> Undo
-                      </Button>
-                      <Button size="sm" variant="ghost" disabled={!healCount} onClick={() => clearStrokes(true)}>
-                        Clear all spot fixes
-                      </Button>
-                    </div>
-                  </div>
+                  <RetouchTools
+                    tool={tool}
+                    setTool={setTool}
+                    size={retouchSize}
+                    setSize={(v) => onChange({ healSize: v })}
+                    strength={strength}
+                    setStrength={(v) => onChange({ toneStrength: v })}
+                    clone={clone}
+                    setClone={setClone}
+                    count={healCount}
+                    onUndo={() => undoStroke(true)}
+                    onClear={() => clearStrokes(true)}
+                  />
                   <div className="flex flex-wrap gap-2">
                     <Button size="sm" variant="outline" onClick={() => replaceLook(omit(own, faceKeys))}>
                       <RotateCcw className="h-4 w-4" /> Back to the tool's level
@@ -372,7 +509,7 @@ export function PassportEditor({
                 onBlur={(v) => changeLook({ bgBlur: v })}
                 onUndo={() => undoStroke(false)}
                 onClear={() => clearStrokes(false)}
-                onChange={onChange}
+                onChange={change}
               />
             ) : null}
           </div>
@@ -567,11 +704,14 @@ function FramePreview({ source, original, edit, aspect, fill }) {
 const brushLook = {
   erase: { fill: "rgba(220,38,38,0.45)", line: "#dc2626", label: "Erasing", Icon: Eraser },
   restore: { fill: "rgba(22,163,74,0.45)", line: "#16a34a", label: "Bringing back", Icon: Brush },
-  heal: { fill: "rgba(59,92,240,0.35)", line: "#3b5cf0", label: "Spot fix", Icon: Sparkles },
+  heal: { fill: "rgba(59,92,240,0.35)", line: "#3b5cf0", label: "Spot healing", Icon: Sparkles },
+  clone: { fill: "rgba(124,58,237,0.3)", line: "#7c3aed", label: "Clone stamp", Icon: Stamp },
+  dodge: { fill: "rgba(250,204,21,0.35)", line: "#ca8a04", label: "Dodge (lighten)", Icon: Sun },
+  burn: { fill: "rgba(120,53,15,0.35)", line: "#78350f", label: "Burn (darken)", Icon: Moon },
 };
 
 /** Paint erase / restore / spot-fix strokes directly on the framed photo. */
-function BrushView({ p, source, original, edit, aspect, fill, disabled, onStroke, brush }) {
+function BrushView({ p, source, original, edit, aspect, fill, disabled, onStroke, brush, marker, picking, onPick }) {
   const [boxRef, size] = useFrameSize(aspect);
   const canvasRef = useRef(null);
   const overlayRef = useRef(null);
@@ -618,9 +758,47 @@ function BrushView({ p, source, original, edit, aspect, fill, disabled, onStroke
     return { x: (dx / s + iw / 2) * toFull, y: (dy / s + ih / 2) * toFull };
   };
 
+  // Full-size portrait pixel → display point (forward of toPortrait).
+  const toDisplay = ({ x, y }) => {
+    let dx = (x / toFull - iw / 2) * s;
+    const dy = (y / toFull - ih / 2) * s;
+    if (e.flip) dx = -dx;
+    const a = ((e.turn * 90 + e.rotate) * Math.PI) / 180;
+    return {
+      x: W / 2 + e.x * W + dx * Math.cos(a) - dy * Math.sin(a),
+      y: H / 2 + e.y * H + dx * Math.sin(a) + dy * Math.cos(a),
+    };
+  };
+  const drawMarker = (ctx) => {
+    if (!marker) return;
+    const m = toDisplay(marker);
+    const r = 9 * dpr;
+    ctx.save();
+    ctx.strokeStyle = "#7c3aed";
+    ctx.lineWidth = 2 * dpr;
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, r * 0.6, 0, Math.PI * 2);
+    ctx.moveTo(m.x - r, m.y);
+    ctx.lineTo(m.x + r, m.y);
+    ctx.moveTo(m.x, m.y - r);
+    ctx.lineTo(m.x, m.y + r);
+    ctx.stroke();
+    ctx.restore();
+  };
+  useEffect(() => {
+    const o = overlayRef.current;
+    if (!o) return;
+    const ctx = o.getContext("2d");
+    ctx.clearRect(0, 0, o.width, o.height);
+    drawMarker(ctx);
+  });
+
   const drawDot = (pt, live) => {
     const ctx = overlayRef.current.getContext("2d");
-    if (!live) ctx.clearRect(0, 0, W, H);
+    if (!live) {
+      ctx.clearRect(0, 0, W, H);
+      drawMarker(ctx);
+    }
     ctx.fillStyle = look.fill;
     ctx.strokeStyle = look.line;
     ctx.lineWidth = 1.5 * dpr;
@@ -633,6 +811,12 @@ function BrushView({ p, source, original, edit, aspect, fill, disabled, onStroke
   const onDown = (ev) => {
     if (disabled) return;
     ev.preventDefault();
+    if (brush.mode === "clone" && (ev.altKey || picking)) {
+      // Alt+click (or "Pick source"): where the Clone stamp copies from.
+      const q = toPortrait(local(ev));
+      onPick?.({ x: Math.round(q.x), y: Math.round(q.y) });
+      return;
+    }
     overlayRef.current.setPointerCapture(ev.pointerId);
     const pt = local(ev);
     overlayRef.current.getContext("2d").clearRect(0, 0, W, H);
@@ -671,7 +855,10 @@ function BrushView({ p, source, original, edit, aspect, fill, disabled, onStroke
           <canvas
             ref={overlayRef}
             style={{ width: size.w, height: size.h }}
-            className={cn("absolute inset-0 touch-none", disabled ? "cursor-not-allowed" : "cursor-crosshair")}
+            className={cn(
+              "absolute inset-0 touch-none",
+              disabled ? "cursor-not-allowed" : brush.mode === "clone" && picking ? "cursor-copy" : "cursor-crosshair",
+            )}
             aria-label={look.label}
             onPointerDown={onDown}
             onPointerMove={onMove}
@@ -684,12 +871,67 @@ function BrushView({ p, source, original, edit, aspect, fill, disabled, onStroke
           {!disabled ? (
             <span className="pointer-events-none absolute top-2 left-2 inline-flex items-center gap-1 rounded-md bg-white/90 px-2 py-1 text-[11px] font-medium text-ink-800 shadow-xs">
               <look.Icon className="h-3.5 w-3.5" />
-              {look.label}
+              {brush.mode === "clone" && picking ? "Tap where to copy from" : look.label}
             </span>
           ) : null}
         </div>
       </div>
       {original ? <CompareButton compare={compare} setCompare={setCompare} /> : null}
+    </div>
+  );
+}
+
+/** Photoshop-style retouch brushes: Spot healing, Clone stamp, Dodge, Burn. */
+function RetouchTools({ tool, setTool, size, setSize, strength, setStrength, clone, setClone, count, onUndo, onClear }) {
+  return (
+    <div className="space-y-3 rounded-lg bg-ink-50/60 p-3">
+      <p className="text-xs font-medium text-ink-700">Brushes — paint on the photo</p>
+      <Segmented size="sm" options={retouchTools} value={tool} onChange={setTool} />
+      <Slider label="Brush size  [  ]" value={size} min={0.5} max={12} step={0.5} defaultValue={2} onChange={setSize} />
+      {tool === "dodge" || tool === "burn" ? (
+        <Slider
+          label="Strength (exposure)"
+          value={strength}
+          min={5}
+          max={100}
+          defaultValue={30}
+          unit="%"
+          onChange={setStrength}
+        />
+      ) : null}
+      {tool === "clone" ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            variant={clone.picking || !clone.src ? "accent" : "outline"}
+            onClick={() => setClone((c) => ({ ...c, picking: true }))}
+          >
+            <Crosshair className="h-4 w-4" /> {clone.src ? "Pick a new source" : "Pick source"}
+          </Button>
+          <span className="text-xs text-muted">
+            {clone.src
+              ? "Now paint where it should be copied to."
+              : "Alt+click (or tap after Pick source) on clean skin to copy from."}
+          </span>
+        </div>
+      ) : null}
+      <p className="text-xs text-muted">
+        {tool === "heal"
+          ? "Tap a spot, mark or stray hair — it is filled from the skin around it."
+          : tool === "clone"
+            ? "Copies the source area exactly, like Photoshop's Clone Stamp (aligned)."
+            : tool === "dodge"
+              ? "Lightens where you paint — dark patches, shadows on one side of the face."
+              : "Darkens where you paint — shiny or too bright patches, outlines."}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" variant="outline" disabled={!count} onClick={onUndo}>
+          <Undo2 className="h-4 w-4" /> Undo last brush
+        </Button>
+        <Button size="sm" variant="ghost" disabled={!count} onClick={onClear}>
+          Clear all brush marks
+        </Button>
+      </div>
     </div>
   );
 }
