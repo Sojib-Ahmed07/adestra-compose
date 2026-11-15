@@ -7,7 +7,7 @@
 > create or change, list any `npm install` / `db:push` / env changes, and ask for the current contents of any file you need
 > to edit that you haven't been shown. **Never guess what an existing file contains.**
 
-Last updated: **12 Nov 2026**, after the Photoshop-style editor + grid sheet update (safe auto colour, Adjustments, brushes, undo, 5 × 5 cutting grid, stamps sharing a passport space).
+Last updated: **15 Nov 2026**, after Batch 5a — Deed writer (the owner's 4 deed templates, Bangla form → print on stamp paper).
 
 ---
 
@@ -244,6 +244,33 @@ npm run format                    # Prettier (printWidth 130)
     (`58` / `80` mm rolls, `a5`, `a4`; `@page` set per page) and a `PrintBar` (`?size=`, `?auto=1` opens the print dialog).
   - CSV: `csvResponse()` in `src/server/csv.js` (UTF-8 BOM for Excel + Bangla, formula-injection safe).
   - Tests: the sidebar has a **Sign out `<form>`** — in browser tests target `main form button[type=submit]`, not `form button`.
+- **Deeds** (Batch 5a, browser only, no DB):
+  - `src/lib/deeds/format.js` — `bn` (Bangla digits), `money` ("৫০,০০০/-"), `moneyWords` ("পঞ্চাশ হাজার"), `takaText`,
+    `two` ("০৫"), `countText` ("০৩ (তিন)"), `bnDate("YYYY-MM-DD")` → "০১/১০/২০২৬", `endOfTerm(start, years)` (start + years − 1
+    day), `todayIso()` (Dhaka), `personFields`, `emptyPerson()` (বাংলাদেশী / ইসলাম), `personText(p, { sep, namePrefix })`
+    writes one party like the owner's deeds and leaves out empty parts.
+  - `src/lib/deeds/templates.js` — the owner's 4 templates as data: office-rent (অফিস/দোকান ভাড়া), money-lend (হাওলাদনামা,
+    optional জামিনদার), vehicle-sale (পুরাতন অটো-রিক্সা বিক্রয়, ৩ ফর্দ, "N (words) ফর্দে" counts the real sheets),
+    vehicle-sale-1 (১ পাতা). Each = `{ id, title, hint, font, people[], fields[], texts(d), blocks(d, T, ctx) }`.
+    `texts` = editable paragraphs (`clause: true` = numbered condition). The form keeps `d.edits[id]` (staff's own wording
+    wins), `d.removed[]`, `d.extra[]` (added conditions). `resolveTexts`, `buildDeed(tpl, d, { pages })`, `emptyDeed`.
+    Block types: p, box, party, clause, table, sign, break (see file header). Wording = owner's files, obvious typos fixed.
+    **To add a template:** write one object like these and add it to `deedTemplates` — the form, preview and print follow.
+  - `src/components/deeds/deed-pages.jsx` — page engine: blocks → HTML (`blockHtml`, same HTML for measuring and printing),
+    measured in a hidden box, flowed onto sheets: stamp space at the top of every sheet (`topFirst` / `topOther`, default
+    105 mm, shown hatched in the preview, never printed), "পাতা-০২" on top of sheets 2+, "চলমান পাতা-০৩" at the bottom;
+    long paragraphs split between sheets (word binary search), headings kept with the next block, `break` blocks start a new
+    sheet when "keepPages" is on, `fitPages` shrinks the font (to 9 pt) to fit N sheets. Printing: a real-size copy is
+    portalled into `#deed-print-root` (a child of body); print CSS hides everything else and sets `@page` to the paper.
+    Layout is skipped while the measure box is hidden (printing), so the print copy never collapses to one sheet.
+    Papers: legal (stamp, 215.9 × 355.6) and A4. Fonts: Kalpurush / Nikosh / SolaimanLipi if installed on the PC, else Noto
+    Sans Bengali (bundled).
+  - `src/components/deeds/bn-input.jsx` — `BanglaTypingProvider`, `BnInput` (Avro Banglish on space / Enter / leaving the
+    box; Bangla from a keyboard layout passes through; Ctrl+M on/off, remembered as `deed:banglish`; short forms md → মোঃ,
+    mst → মোছাঃ, mosa → মোসাঃ, dr → ডাঃ), `BanglaSwitch`.
+  - `components/tools/deed-writer.jsx` — template cards, people (each party; "আগের মানুষ থেকে পূরণ" from `deed:people`, the
+    last 80 people saved when printing), details, wording/conditions editor, page settings (per template, `deed:page:<id>`),
+    draft per template (`deed:draft:<id>`), Print (waits 350 ms so the last Banglish word converts).
 - **Bangla numbers:** `src/lib/number-words.js` has the full irregular 0–99 list, lakh/crore, `parseAmount` accepts Bangla digits.
   `toBanglaDigits` / `fromBanglaDigits` in `src/lib/utils.js`.
 
@@ -292,7 +319,7 @@ src/
     print/                         layout (requireUser, no shell) · receipt/[id] · payment/[id] · statement/[id] · rates
     (app)/tools/<slug>/page.jsx    one per tool: auto-passport, photo-sheet, remove-bg, joint-photo, id-card-print, page-arranger, job-photo,
                                    pdf-merge, pdf-split, pdf-organize, images-to-pdf, pdf-to-images, pdf-compress,
-                                   pdf-protect, pdf-watermark, bangla-typing, bijoy-unicode, image-to-text,
+                                   pdf-protect, pdf-watermark, deed-writer, bangla-typing, bijoy-unicode, image-to-text,
                                    image-resize, age-calculator, amount-in-words
   components/
     ui/        button, form ("use client"), misc, interactive ("use client"), file-drop ("use client"), sortable.js
@@ -305,10 +332,11 @@ src/
                expense-form, entry-table, entry-filters, void-button, party-forms (PartyFormButton, PaymentForm,
                ArchivePartyButton, PeopleFilters), price-editor (PriceEditor, AccountSettingsForm)
     print/     paper (Paper, ShopHeading, receiptSizes), print-bar, print-button
+    deeds/     deed-pages (DeedPages, blockHtml, deedPapers, deedFonts, defaultPageSettings), bn-input
     tools/     one client component per tool (same names as the slugs)
   lib/         tools.js (registry: groups + tools), utils.js, age.js, number-words.js, zip.js, clipboard.js, accounts.js,
                use-stored.js, photo/ (sizes, image, sheet, export, signature, card, enhance, adjust, ai/ (faces, matte, portrait, tone, retouch, look)), pdf/ (engine, ops, images, raster, stamp),
-               bangla/ (convert, avro, ocr)
+               bangla/ (convert, avro, ocr), deeds/ (format, templates)
   db/          schema.js, index.js, url.js, add-user.js (`npm run user:add`)
   server/      auth.js, session.js (getCurrentUser, requireUser, requireOwner, getOwner, safeNext), errors.js,
                queries/settings.js (getShop, getTeam), actions/auth.js (signIn, signOut),
@@ -381,6 +409,7 @@ Schema change → edit `schema.js`, tell the owner to run `npm run db:push`, upd
 
 | Date | Change | Next |
 | --- | --- | --- |
+| 2026-11-15 | **Batch 5a: Deed writer** (দলিল / চুক্তিপত্র লেখা, new group "Deeds & documents"). The owner's 4 Word templates as fill-in deeds: office/shop rent, হাওলাদনামা (money lending, optional guarantor), old auto-rickshaw sale (3 sheets), auto-rickshaw buy-sell (1 sheet). Bangla form with Banglish typing (Avro, Ctrl+M, md → মোঃ), saved people to refill parties, amounts → Bangla digits + words, dates → Bangla, end of term worked out; every paragraph and condition editable (back to automatic, leave out, add). Prints on Legal stamp paper below the stamp (stamp space adjustable per sheet), পাতা / চলমান পাতা marks, paragraphs flow over sheets, fit into N sheets, font choice. Drafts and page settings kept in the browser. No new packages, no DB change. | More templates (sale deed, kot-bondhok, affidavit, applications), CV maker, cards |
 | 2026-11-12 | **Reuse a sheet + separate spacing.** Grid sheets: space left–right and up–down set separately. "Reuse this sheet": mark the spaces already printed (tap the map, or "Printed — mark as used" after printing), the next print fills only the free spaces; works across different sizes; "New sheet" clears. No new packages, no DB change. | Batch 5 when the owner sends his templates |
 | 2026-11-12 | **Photoshop-style editing + cutting grid.** Auto colour made safe (never adds colour — fixes "skin turns yellow"). Editor tabs: Quick fix · **Adjustments** (Auto Tone / Auto Contrast / Auto Color, Exposure, Levels, Curves, Color Balance, Hue/Saturation with colour ranges) · **Retouch** (Spot healing, Clone stamp, Dodge, Burn, `[` `]`) · **Undo / Redo** (Ctrl+Z, Ctrl+Shift+Z). Sheets: new **Grid — easy cutting** layout (default): A4 = 5 × 5 passport, cutting space spread to the corners, cutting guides across the page, **2 stamps share one passport space**, photos per row / rows per page; old layout = "Pack tight". Auto passport: presets 5 passport, 4 passport + 2 stamp, 3 passport + 4 stamp, 25 passport; each customer's sizes stay on their row; default paper A4. No new packages, no DB change. | Batch 5 when the owner sends his templates |
 | 2026-11-11 | **Photo quality update.** New automatic colour (white balance from the face skin, dull photos stretched, exposure on brightness only so colours stay rich). **Face touch-up** (Off / Natural / Studio / Strong for all photos + per-photo sliders: remove spots, smooth skin, even colour, shine, under-eye, eyes, teeth, face light) and a **spot-fix brush** (zoomed on the face); never reshapes the face. Light tab: One-tap enhance, highlights, clarity, vibrance, tint, reduce grain. Background: blur the kept background, empty corners filled. **Joint photo**: full editor per person (position, light, touch-up, brush), keep own backgrounds with **soft join + blur in the middle** (people stay sharp), blur backgrounds, closeness 55–115 %, 4R size. **NID**: page layout with drag / resize / snap to middle, any size 40–260 %, fill half page / width, sets per page + Fill the page, back on next page (two-sided), both sides from one photo (+ swap), Clearer / Extra clear print, brightness/contrast. No new packages, no DB change. | Batch 5 when the owner sends his templates; photo-sheet (manual crop) could get the same auto colour |
@@ -398,7 +427,7 @@ Schema change → edit `schema.js`, tell the owner to run `npm run db:push`, upd
 2. ✅ PDF tools (merge, split, organize, photos ↔ PDF, compress, lock/unlock, watermark, page numbers). Later: sign/stamp a PDF.
 3. ✅ Bangla typing (Banglish typing, Bijoy ↔ Unicode text + Word files, image/PDF → text).
 4. ✅ Shop accounts (sales, expenses, baki, receipts, customers/suppliers, reports, price list).
-5. **Documents & print** (waiting for the owner's own deed, CV and other templates): deeds and applications (sale deed, mortgage/kot-bondhok, affidavit, applications), CV maker, visiting cards,
+5. **Documents & print** — 5a ✅ Deed writer with the owner's 4 templates (15 Nov). Still to come (send templates): deeds and applications (sale deed, mortgage/kot-bondhok, affidavit, applications), CV maker, visiting cards,
    Halkhata cards, notices, certificates — fill-in templates with print/PDF.
 6. ✅ (mostly) **AI photo:** auto passport, background removal/colour, joint photo, card straightening — done offline in the photo
    batch. Still open: outfit/suit change, upscale (would need an AI service — owner decides).

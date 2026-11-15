@@ -6,6 +6,7 @@ export const toolGroups = [
   { id: "photo", label: "Photo studio", bangla: "ফটো স্টুডিও" },
   { id: "job", label: "Job application", bangla: "চাকরির আবেদন" },
   { id: "pdf", label: "PDF tools", bangla: "পিডিএফ টুলস" },
+  { id: "documents", label: "Deeds & documents", bangla: "দলিল ও চুক্তিপত্র" },
   { id: "bangla", label: "Bangla typing", bangla: "বাংলা লেখা" },
   { id: "image", label: "Image tools", bangla: "ইমেজ টুলস" },
   { id: "calc", label: "Calculators", bangla: "হিসাব" },
@@ -147,6 +148,16 @@ export const tools = [
     description: "Stamp text (Bangla or English) or your logo on every page, and add page numbers.",
     icon: "Stamp",
     keywords: "watermark stamp logo page numbers numbering pdf জলছাপ পৃষ্ঠা নম্বর",
+  },
+  {
+    slug: "deed-writer",
+    group: "documents",
+    name: "Deed writer",
+    bangla: "দলিল / চুক্তিপত্র লেখা",
+    description: "Pick a deed, fill in the people and details in Bangla, press Print — it lands below the stamp on each sheet.",
+    icon: "ScrollText",
+    keywords:
+      "deed agreement stamp chuktipotro dolil rent office shop loan hawladnama auto rickshaw sale দলিল চুক্তিপত্র হাওলাদনামা ভাড়া বিক্রয় স্ট্যাম্প",
   },
   {
     slug: "bangla-typing",
