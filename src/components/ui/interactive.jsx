@@ -62,7 +62,7 @@ export function Slider({ label, value, onChange, min, max, step = 1, unit = "", 
 
 /** − [n] + */
 export function Stepper({ value, onChange, min = 0, max = 999, step = 1, className, label }) {
-  const set = (n) => onChange(Math.min(max, Math.max(min, n)));
+  const set = (n) => onChange(Math.round(Math.min(max, Math.max(min, n)) * 1000) / 1000); // no 0.30000000000000004
   return (
     <div
       className={cn(

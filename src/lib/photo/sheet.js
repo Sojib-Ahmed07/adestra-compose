@@ -8,7 +8,8 @@ import { makeCanvas } from "./image";
  * setCopies (optional) lets the sheet panel offer "Fill the page" for that item.
  * group (optional): items with the same group belong to one customer (e.g. their passport + stamp sizes) — with
  * "start each person on a new row" a new row starts only when the group changes. Defaults to the item's key.
- * @typedef {{ item: SheetItem, x: number, y: number, w: number, h: number }} Placement
+ * @typedef {{ item: SheetItem, x: number, y: number, w: number, h: number, rot?: boolean }} Placement
+ * rot: the photo is drawn turned a quarter (top of the photo on the left); w / h are the turned size.
  * A page is an array of Placements; grid pages also carry `page.guides` = cutting guide lines `[x1, y1, x2, y2][]` (mm):
  * one right across the page above and below every row (cut the sheet into strips first), then short ones between the
  * photos of each strip.
@@ -101,7 +102,7 @@ export function layoutSheet(items, paper, { margin, gap, newRowPerItem, position
  *   grid: { cols: number, rows: number, maxCols: number, maxRows: number, cell: { w: number, h: number } } | null }}
  */
 export function layoutGrid(items, paper, opts) {
-  const { margin, newRowPerItem, position = "top-left", spread = true, pair = true } = opts;
+  const { margin, newRowPerItem, position = "top-left", spread = true, spreadY = false, pair = true } = opts;
   const gapX = Number.isFinite(opts.gapX) ? opts.gapX : opts.gap;
   const gapY = Number.isFinite(opts.gapY) ? opts.gapY : opts.gap;
   const availW = paper.w - 2 * margin;
@@ -120,23 +121,33 @@ export function layoutGrid(items, paper, opts) {
   const base = { w: Math.max(...live.map((i) => i.wMm)), h: Math.max(...live.map((i) => i.hMm)) };
   const mainArea = main.wMm * main.hMm;
   const SLACK = 1.15; // a shared cell may be up to 15% taller than the main photo (never wider — keeps 5 in a row)
+  const INNER = 2; // least space between photos sharing a cell
   const packOf = (it) => {
-    const w = it.wMm;
-    const h = it.hMm;
-    const single = { kx: 1, ky: 1 };
-    if (!pair || w * h * 2 > mainArea * 1.2) return single;
-    const fitsX = (k) => k * w + (k - 1) * gapX <= base.w + EPS;
-    const fitsY = (k) => k * h + (k - 1) * gapY <= base.h * SLACK + EPS && k * h + (k - 1) * gapY <= availH + EPS;
-    let kx = 1;
-    let ky = 1;
-    while (fitsX(kx + 1)) kx++;
-    while (fitsY(ky + 1)) ky++;
-    return kx * ky >= 2 ? { kx, ky } : single;
+    const single = { kx: 1, ky: 1, rot: false };
+    if (!pair || it.wMm * it.hMm * 2 > mainArea * 1.2) return single;
+    const fit = (w, h, hMax) => {
+      let kx = 1;
+      let ky = 1;
+      while ((kx + 1) * w + kx * INNER <= base.w + EPS) kx++;
+      while ((ky + 1) * h + ky * INNER <= hMax + EPS && (ky + 1) * h + ky * INNER <= availH + EPS) ky++;
+      return { kx, ky };
+    };
+    // 1. Upright, inside the main photo's space. 2. Turned sideways (like studio sheets: 2 stamps lying down in one
+    // passport space). 3. Upright in a space up to 15% taller.
+    const a = fit(it.wMm, it.hMm, base.h);
+    if (a.kx * a.ky >= 2) return { ...a, rot: false };
+    const b = fit(it.hMm, it.wMm, base.h);
+    if (b.kx * b.ky >= 2) return { ...b, rot: true };
+    const c = fit(it.wMm, it.hMm, base.h * SLACK);
+    if (c.kx * c.ky >= 2) return { ...c, rot: false };
+    return single;
   };
   const packs = new Map(live.map((it) => [it, packOf(it)]));
+  const dims = (it) => (packs.get(it).rot ? { w: it.hMm, h: it.wMm } : { w: it.wMm, h: it.hMm });
   const blockOf = (it) => {
     const { kx, ky } = packs.get(it);
-    return { w: kx * it.wMm + (kx - 1) * gapX, h: ky * it.hMm + (ky - 1) * gapY };
+    const d = dims(it);
+    return { w: kx * d.w + (kx - 1) * INNER, h: ky * d.h + (ky - 1) * INNER };
   };
   const cell = { w: 0, h: 0 };
   for (const it of live) {
@@ -147,7 +158,10 @@ export function layoutGrid(items, paper, opts) {
   cell.w = Math.min(cell.w, availW);
   cell.h = Math.min(cell.h, availH);
 
-  const maxCols = Math.max(1, Math.floor((availW + gapX + EPS) / (cell.w + gapX)));
+  // Spread across the width = equal space at both edges and between photos (as on studio sheets), at least gapX each.
+  const maxCols = spread
+    ? Math.max(1, Math.floor((paper.w - gapX + EPS) / (cell.w + gapX)))
+    : Math.max(1, Math.floor((availW + gapX + EPS) / (cell.w + gapX)));
   const maxRows = Math.max(1, Math.floor((availH + gapY + EPS) / (cell.h + gapY)));
   const cols = opts.cols > 0 ? Math.min(opts.cols, maxCols) : maxCols;
   const rows = opts.rows > 0 ? Math.min(opts.rows, maxRows) : maxRows;
@@ -156,17 +170,16 @@ export function layoutGrid(items, paper, opts) {
   let gy = gapY;
   let x0 = margin;
   let y0 = margin;
+  const blockW = cols * cell.w + (cols - 1) * gapX;
+  const blockH = rows * cell.h + (rows - 1) * gapY;
   if (spread) {
-    gx = cols > 1 ? (availW - cols * cell.w) / (cols - 1) : 0;
+    gx = (paper.w - cols * cell.w) / (cols + 1);
+    x0 = gx;
+  } else if (position !== "top-left") x0 = (paper.w - blockW) / 2;
+  if (spreadY) {
     gy = rows > 1 ? (availH - rows * cell.h) / (rows - 1) : 0;
-    if (cols === 1) x0 = (paper.w - cell.w) / 2;
     if (rows === 1) y0 = position === "center" ? (paper.h - cell.h) / 2 : margin;
-  } else {
-    const blockW = cols * cell.w + (cols - 1) * gapX;
-    const blockH = rows * cell.h + (rows - 1) * gapY;
-    if (position !== "top-left") x0 = (paper.w - blockW) / 2;
-    if (position === "center") y0 = (paper.h - blockH) / 2;
-  }
+  } else if (position === "center" && !spread) y0 = (paper.h - blockH) / 2;
 
   // Fill cells in order. A cell holds up to kx × ky copies of one item.
   const pages = [];
@@ -211,7 +224,8 @@ export function layoutGrid(items, paper, opts) {
       row++;
     }
     lastGroup = group;
-    const { kx, ky } = packs.get(it);
+    const { kx, ky, rot } = packs.get(it);
+    const d = dims(it);
     const per = kx * ky;
     let left = Math.floor(it.copies);
     while (left > 0) {
@@ -219,14 +233,26 @@ export function layoutGrid(items, paper, opts) {
       const cx = x0 + col * (cell.w + gx);
       const cy = y0 + row * (cell.h + gy);
       const n = Math.min(per, left);
-      // Shared cell: fill one column top to bottom, then the next (stamps one above the other first).
-      const usedX = Math.min(kx, Math.ceil(n / ky));
-      const bw = usedX * it.wMm + (usedX - 1) * gapX;
-      const ox = cx + (cell.w - bw) / 2;
-      for (let k = 0; k < n; k++) {
-        const ix = Math.floor(k / ky);
-        const iy = k % ky;
-        page.push({ item: it, x: ox + ix * (it.wMm + gapX), y: cy + iy * (it.hMm + gapY), w: it.wMm, h: it.hMm });
+      if (per === 1) {
+        // One photo: top-left of its space (the main size fills it exactly).
+        page.push({ item: it, x: cx + (cell.w - d.w) / 2, y: cy, w: d.w, h: d.h, rot });
+      } else {
+        // Shared space: the photos share out the spare room evenly around them (2 stamps: one above the other,
+        // centred, like the studio sheet).
+        const sx = (cell.w - kx * d.w) / kx;
+        const sy = (cell.h - ky * d.h) / ky;
+        for (let k = 0; k < n; k++) {
+          const ix = Math.floor(k / ky);
+          const iy = k % ky;
+          page.push({
+            item: it,
+            x: cx + sx / 2 + ix * (d.w + sx),
+            y: cy + sy / 2 + iy * (d.h + sy),
+            w: d.w,
+            h: d.h,
+            rot,
+          });
+        }
       }
       page.cells.push({ row, x: cx, y: cy });
       page.spaces.push({ x: cx, y: cy, w: cell.w, h: cell.h });
@@ -323,7 +349,7 @@ export function renderPage(placements, paper, pxPerMm, opts = {}) {
 
   // Grid pages: light guide lines right across the page along every row and column of photos, so the sheet can be
   // cut into strips with scissors from edge to edge. Drawn first — photos cover them.
-  if (opts.cutLines && placements.guides) {
+  if (opts.guides && placements.guides) {
     ctx.strokeStyle = "#c3c8d4";
     ctx.lineWidth = Math.max(1, pxPerMm * 0.12);
     ctx.beginPath();
@@ -345,11 +371,20 @@ export function renderPage(placements, paper, pxPerMm, opts = {}) {
     const dy = Math.round(p.y * pxPerMm);
     const dw = Math.round(p.w * pxPerMm);
     const dh = Math.round(p.h * pxPerMm);
-    ctx.drawImage(img, dx, dy, dw, dh);
+    if (p.rot) {
+      // Quarter turn to the left: the photo's top ends up on the left side.
+      ctx.save();
+      ctx.translate(dx, dy + dh);
+      ctx.rotate(-Math.PI / 2);
+      ctx.drawImage(img, 0, 0, dh, dw);
+      ctx.restore();
+    } else ctx.drawImage(img, dx, dy, dw, dh);
     if (opts.cutLines) {
-      ctx.strokeStyle = "#9aa1b5";
-      ctx.lineWidth = Math.max(1, pxPerMm * 0.1);
-      ctx.strokeRect(dx + 0.5, dy + 0.5, dw - 1, dh - 1);
+      // Thin grey line just outside the photo (0.17 mm, as on the studio sheet) — cut along it.
+      const lw = Math.max(1, Math.round(pxPerMm * 0.17));
+      ctx.strokeStyle = "#9d9d9d";
+      ctx.lineWidth = lw;
+      ctx.strokeRect(dx - lw / 2, dy - lw / 2, dw + lw, dh + lw);
     }
   }
   return canvas;

@@ -9,10 +9,10 @@ export const mmToPx = (mm, pxPerMm = PX_PER_MM) => Math.round(mm * pxPerMm);
 
 /** Photo sizes used in Bangladesh studios. */
 export const photoSizes = [
-  { id: "passport", label: "Passport", detail: "1.5 × 1.9 in · 38 × 48 mm", w: 38, h: 48 },
+  { id: "passport", label: "Passport", detail: "1.5 × 1.9 in · 38.1 × 48.3 mm", w: 38.1, h: 48.26 },
   { id: "passport-40", label: "Passport (40 × 50)", detail: "40 × 50 mm", w: 40, h: 50 },
   { id: "e-passport", label: "E-passport / visa", detail: "45 × 55 mm", w: 45, h: 55 },
-  { id: "stamp", label: "Stamp", detail: "0.8 × 1 in · 20 × 25 mm", w: 20, h: 25 },
+  { id: "stamp", label: "Stamp", detail: "0.75 × 0.95 in · 19 × 24 mm", w: 19.05, h: 24.13 },
   { id: "us-visa", label: "Square visa", detail: "2 × 2 in · 51 × 51 mm", w: 51, h: 51 },
   { id: "custom", label: "Custom size", detail: "Any size in mm", w: 38, h: 48 },
 ];

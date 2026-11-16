@@ -25,8 +25,9 @@ export function SheetPanel({
   items,
   fileName,
   defaultPaper = "a4",
-  defaultMargin = 4,
+  defaultMargin = 3.8,
   defaultGap = 3,
+  defaultGapY = 4.23,
   showNewRow = true,
   papers,
   emptyText,
@@ -39,7 +40,7 @@ export function SheetPanel({
   const [landscape, setLandscape] = useState(false);
   const [margin, setMargin] = useState(defaultMargin);
   const [gap, setGap] = useState(defaultGap); // left–right (and the only gap in "pack tight")
-  const [gapY, setGapY] = useState(defaultGap); // up–down (grid)
+  const [gapY, setGapY] = useState(defaultGapY); // up–down (grid)
   const [used, setUsed] = useState([]); // reused sheet: areas of page 1 already printed on ({ x, y, w, h } mm)
   const [usedSig, setUsedSig] = useState("");
   const [cutLines, setCutLines] = useState(true);
@@ -56,8 +57,8 @@ export function SheetPanel({
   useEffect(() => {
     if (!rememberKey) return;
     try {
-      // "sheet2:" — new defaults (more cutting space) for everyone after the grid layout came in.
-      const saved = JSON.parse(localStorage.getItem(`sheet2:${rememberKey}`) || "null");
+      // "sheet3:" — new defaults for everyone (16 Nov: spacing measured from the shop's own studio sheet).
+      const saved = JSON.parse(localStorage.getItem(`sheet3:${rememberKey}`) || "null");
       if (saved) {
         if (typeof saved.paperId === "string") setPaperId(saved.paperId);
         if (typeof saved.landscape === "boolean") setLandscape(saved.landscape);
@@ -85,7 +86,7 @@ export function SheetPanel({
     if (!rememberKey || !loaded.current) return;
     try {
       localStorage.setItem(
-        `sheet2:${rememberKey}`,
+        `sheet3:${rememberKey}`,
         JSON.stringify({
           paperId,
           landscape,
@@ -206,16 +207,19 @@ export function SheetPanel({
             onChange={setMode}
           />
         </Field>
-        <Field label="Page edge (mm)" hint="Most printers can't print the last 3–4 mm.">
-          <Stepper value={margin} onChange={setMargin} min={0} max={30} step={1} label="page edge" />
+        <Field
+          label={mode === "grid" && spread ? "Top edge (mm)" : "Page edge (mm)"}
+          hint="Most printers can't print the last 3–4 mm."
+        >
+          <Stepper value={margin} onChange={setMargin} min={0} max={30} step={0.1} label="page edge" />
         </Field>
         {mode === "grid" ? (
           <>
             <Field label={spread ? "Space left–right, at least (mm)" : "Space left–right (mm)"}>
-              <Stepper value={gap} onChange={setGap} min={0} max={30} step={1} label="space left to right" />
+              <Stepper value={gap} onChange={setGap} min={0} max={30} step={0.1} label="space left to right" />
             </Field>
-            <Field label={spread ? "Space up–down, at least (mm)" : "Space up–down (mm)"}>
-              <Stepper value={gapY} onChange={setGapY} min={0} max={40} step={1} label="space up and down" />
+            <Field label="Space up–down (mm)">
+              <Stepper value={gapY} onChange={setGapY} min={0} max={40} step={0.1} label="space up and down" />
             </Field>
           </>
         ) : (
@@ -265,7 +269,7 @@ export function SheetPanel({
         {mode === "grid" ? (
           <>
             <Checkbox
-              label="Spread to the corners (more cutting space)"
+              label="Same space at the edges and between photos (left–right)"
               checked={spread}
               onChange={(e) => setSpread(e.target.checked)}
             />
