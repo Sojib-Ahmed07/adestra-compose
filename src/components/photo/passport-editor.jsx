@@ -458,6 +458,7 @@ export function PassportEditor({
                     />
                   </Field>
                   <div className="grid gap-x-5 gap-y-3 sm:grid-cols-2 md:grid-cols-1 xl:grid-cols-2">
+                    {slider("glow", "Glow — bright, clear skin", 0, 100)}
                     {slider("blemish", "Remove spots & marks", 0, 100)}
                     {slider("smooth", "Smooth skin", 0, 100)}
                     {slider("even", "Even skin colour", 0, 100)}

@@ -1,8 +1,9 @@
 // src/lib/photo/ai/tone.js
 // Automatic light and colour for portraits (browser or Node — plain arrays only).
 // Rule: "do no harm". The automatic fix only takes away a clear colour cast and dullness; it never adds colour.
-// 1. White balance from the face's skin, gently: only removes a cast (hue moved a little, colour strength only ever
-//    reduced, never increased — so pale or flash-lit faces can't turn yellow/orange).
+// 1. White balance: a room-light cast (bulb / tube light / shade) measured on the greyest things in the photo is removed
+//    when the skin agrees; then the face's skin is balanced gently (hue moved a little, colour strength only reduced —
+//    so pale or flash-lit faces can't turn yellow/orange).
 // 2. A small levels stretch measured on the person, not the background.
 // 3. Exposure set from the face's brightness — done on brightness only, so colours stay rich instead of washed out.
 // 4. A soft S-curve (gives back "punch") and a little vibrance (boosts dull colours more than strong ones).
@@ -12,7 +13,8 @@ const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 const lum = (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
 
 /**
- * @typedef {{ gain: number[], lo: number, hi: number, curve: Float32Array, vibrance: number }} Tone
+ * @typedef {{ gain: number[], lo: number, hi: number, curve: Float32Array, vibrance: number, faceY?: number|null,
+ *   sceneY?: number, faceClipped?: number }} Tone  (face / whole-photo brightness and blown-out share before the fix, for warnings)
  * curve: 1021 entries, brightness 0…255 in steps of 0.25 → new brightness 0…255.
  */
 
@@ -75,7 +77,29 @@ export function analyseTone(src, alpha, W, H, face) {
 
     let gain;
     if (skin && skin.n > 50) {
-        gain = skinBalance(skin.r, skin.g, skin.b);
+        // 1. Room-light cast (tungsten bulb = orange, tube light = green, shade = blue): measured on the greyest things in
+        //    the photo (walls, white clothes, eye whites), and only used when it also makes the skin more natural — so a
+        //    green tree or a blue dress can't be mistaken for a cast.
+        const cast = neutralGains(src, W, H);
+        let base = [1, 1, 1];
+        if (cast) {
+            const e0 = skinOffNatural(skin.r, skin.g, skin.b);
+            const t = cast.map((k) => 1 + (k - 1) * 0.85);
+            const e1 = skinOffNatural(skin.r * t[0], skin.g * t[1], skin.b * t[2]);
+            const strength = Math.max(...cast) / Math.min(...cast);
+            if (strength > 1.05 && e1 < e0 - 0.02) base = t;
+        }
+        // 2. Then the skin itself: clearly unnatural skin (a cast with nothing grey in the photo to measure it on) is moved
+        //    most of the way back into the natural range; otherwise only the gentle balance (hue a little, calm over-orange).
+        const sr2 = skin.r * base[0],
+            sg2 = skin.g * base[1],
+            sb2 = skin.b * base[2];
+        const sb = skinOffNatural(sr2, sg2, sb2) > 0.06 ? skinToNatural(sr2, sg2, sb2) : skinBalance(sr2, sg2, sb2);
+        gain = base.map((k, c) => k * sb[c]);
+        // Keep the skin's brightness (exposure is set below).
+        const y0 = lum(skin.r, skin.g, skin.b);
+        const y1 = lum(skin.r * gain[0], skin.g * gain[1], skin.b * gain[2]);
+        gain = gain.map((k) => (k * y0) / Math.max(1, y1));
     } else {
         // No face: soft grey-world over the whole photo (old behaviour).
         const mean = (sr + sg + sb) / 3 / Math.max(1, n);
@@ -90,11 +114,15 @@ export function analyseTone(src, alpha, W, H, face) {
     let gamma = 1;
     if (skin && skin.n > 50) {
         const y = clamp((lum(skin.r * gain[0], skin.g * gain[1], skin.b * gain[2]) - lo) / Math.max(1, hi - lo), 0.04, 0.96);
-        // Comfortable band for a passport face: only faces outside it are moved (to its edge).
-        const target = clamp(y, 0.47, 0.7);
-        gamma = clamp(Math.log(target) / Math.log(y), 0.72, 1.3);
+        // Bright, fresh face (BD studio look) but still the same person: a dim face is lifted most of the way to ~62%,
+        // a bright face is left alone, only a blown-out face is brought down. The gamma limit caps the lift.
+        const target = y < 0.62 ? y + (0.62 - y) * 0.7 : Math.min(y, 0.74);
+        // An under-exposed photo (the whole scene is dark, not just darker skin) may be lifted further.
+        const sceneY0 = lum(sr, sg, sb) / Math.max(1, n) / 255;
+        const minGamma = sceneY0 < 0.3 ? 0.58 : sceneY0 < 0.4 ? 0.65 : 0.72;
+        gamma = clamp(Math.log(target) / Math.log(y), minGamma, 1.3);
     }
-    const contrast = 0.07; // soft S-curve strength
+    const contrast = 0.035; // soft S-curve strength (kept low: a stronger curve darkens mid-tone skin)
     const curve = new Float32Array(1021);
     for (let i = 0; i < curve.length; i++) {
         let x = i / 4 / 255;
@@ -102,7 +130,11 @@ export function analyseTone(src, alpha, W, H, face) {
         x = sCurve(x, contrast); // leaves 0, 0.5 and 1 in place
         curve[i] = clamp(x, 0, 1) * 255;
     }
-    return { gain, lo, hi, curve, vibrance: 0 };
+    // Face brightness and blown-out share, for warnings (0…1).
+    const faceY = skin && skin.n > 50 ? lum(skin.r, skin.g, skin.b) / 255 : null;
+    const sceneY = lum(sr, sg, sb) / Math.max(1, n) / 255;
+    const faceClipped = skin && skin.n > 50 ? Math.max(skin.clipped, skin.r > 245 ? 1 : 0) : 0;
+    return { gain, lo, hi, curve, vibrance: 0, faceY, sceneY, faceClipped };
 }
 
 /** Smooth S-curve: blend towards a smoothstep around the middle. */
@@ -117,6 +149,7 @@ function sampleSkin(src, alpha, W, H, f) {
     const rx = f.faceW * 0.3;
     const ry = (f.chinY - f.eyeY) * 0.48;
     const vals = [];
+    let clipped = 0;
     for (let y = Math.max(0, Math.floor(fcy - ry)); y < Math.min(H, fcy + ry); y += 2) {
         for (let x = Math.max(0, Math.floor(fcx - rx)); x < Math.min(W, fcx + rx); x += 2) {
             const dx = (x - fcx) / rx;
@@ -126,12 +159,14 @@ function sampleSkin(src, alpha, W, H, f) {
             if (alpha[i] < 230) continue;
             const j = i * 4;
             const l = lum(src[j], src[j + 1], src[j + 2]);
+            if (l > 248) clipped++;
             if (l < 18 || l > 248) continue; // deep shadow (nostrils) or blown highlight
             vals.push(l, src[j], src[j + 1], src[j + 2]);
         }
     }
     const m = vals.length / 4;
     if (!m) return { n: 0 };
+    clipped /= m + clipped;
     // Use the middle 70% by brightness (drop shine and shadow).
     const idx = Array.from({ length: m }, (_, k) => k).sort((a, b) => vals[a * 4] - vals[b * 4]);
     const a = Math.floor(m * 0.15);
@@ -146,7 +181,92 @@ function sampleSkin(src, alpha, W, H, f) {
         bl += vals[q + 3];
     }
     const c = b - a;
-    return { n: c, r: r / c, g: g / c, b: bl / c };
+    return { n: c, r: r / c, g: g / c, b: bl / c, clipped };
+}
+
+const deg = Math.PI / 180;
+/**
+ * How far a skin colour is from natural skin (0 = natural). Natural = hue 118°–142° and colour strength 0.19–0.31 in the
+ * Cb/Cr plane (measured on fair to dark Bangladeshi faces in normal light). Orange bulb light → too strong;
+ * tube light → too green (hue up); shade → too grey / pink (weak, hue down).
+ */
+function skinOffNatural(r, g, b) {
+    const Y = 0.299 * r + 0.587 * g + 0.114 * b;
+    if (Y < 8) return 0;
+    const cb = (-0.168736 * r - 0.331264 * g + 0.5 * b) / Y;
+    const cr = (0.5 * r - 0.418688 * g - 0.081312 * b) / Y;
+    const hue = clamp(Math.atan2(cr, cb), 118 * deg, 142 * deg);
+    const mag = clamp(Math.hypot(cb, cr), 0.19, 0.31);
+    return Math.hypot(cb - Math.cos(hue) * mag, cr - Math.sin(hue) * mag);
+}
+
+/**
+ * Gains that move a clearly off skin colour 75% of the way to the nearest natural skin colour, same brightness.
+ * Colour strength is only raised when the hue is also wrong (grey-blue shade light), never for a pale face.
+ */
+function skinToNatural(r, g, b) {
+    const Y = 0.299 * r + 0.587 * g + 0.114 * b;
+    if (Y < 8) return [1, 1, 1];
+    const cb = (-0.168736 * r - 0.331264 * g + 0.5 * b) / Y;
+    const cr = (0.5 * r - 0.418688 * g - 0.081312 * b) / Y;
+    const hue0 = Math.atan2(cr, cb);
+    const mag0 = Math.hypot(cb, cr);
+    const hue = clamp(hue0, 118 * deg, 142 * deg);
+    const hueOff = Math.abs(hue - hue0) > 8 * deg;
+    const mag = clamp(mag0, hueOff ? 0.19 : 0, 0.31);
+    const k = 0.75;
+    const tcb = (cb + (Math.cos(hue) * mag - cb) * k) * Y;
+    const tcr = (cr + (Math.sin(hue) * mag - cr) * k) * Y;
+    const tr = Y + 1.402 * tcr;
+    const tg = Y - 0.344136 * tcb - 0.714136 * tcr;
+    const tb = Y + 1.772 * tcb;
+    return [tr / r, tg / g, tb / b].map((v) => clamp(v, 0.75, 1.35));
+}
+
+/**
+ * Colour of the light, from the greyest quarter of the photo (mid to bright pixels with the least colour).
+ * Returns gains that make those pixels grey, or null when there is too little to measure.
+ */
+function neutralGains(src, W, H) {
+    const bins = new Uint32Array(101);
+    const keep = [];
+    for (let i = 0; i < W * H; i += 3) {
+        const j = i * 4;
+        if (!src[j + 3]) continue;
+        const r = src[j],
+            g = src[j + 1],
+            b = src[j + 2];
+        const mx = Math.max(r, g, b);
+        if (mx < 60 || mx > 250) continue; // too dark to tell, or clipped
+        const c = Math.round(((mx - Math.min(r, g, b)) / mx) * 100);
+        bins[c]++;
+        keep.push(c, r, g, b);
+    }
+    const total = keep.length / 4;
+    if (total < 500) return null;
+    let acc = 0;
+    let thr = 100;
+    for (let c = 0; c <= 100; c++) {
+        acc += bins[c];
+        if (acc >= total * 0.25) {
+            thr = c;
+            break;
+        }
+    }
+    let r = 0,
+        g = 0,
+        b = 0,
+        m = 0;
+    for (let k = 0; k < keep.length; k += 4) {
+        if (keep[k] > thr) continue;
+        r += keep[k + 1];
+        g += keep[k + 2];
+        b += keep[k + 3];
+        m++;
+    }
+    if (m < 200) return null;
+    const mean = (r + g + b) / 3;
+    return [mean / Math.max(1, r), mean / Math.max(1, g), mean / Math.max(1, b)].map((k) => clamp(k, 0.7, 1.45));
 }
 
 /**

@@ -6,6 +6,7 @@
 import { makeCanvas, srcH, srcW } from "../image";
 import { findFaces } from "./faces";
 import { matte } from "./matte";
+import { boxMean } from "./retouch";
 import { analyseTone, applyTone } from "./tone";
 
 export class NoFaceError extends Error { }
@@ -117,7 +118,7 @@ export async function preparePortrait(img, { onStep } = {}) {
 
   onStep?.("background");
   let alpha = await matte(crop);
-  alpha = refineAlpha(alpha, src, W, H, P.nose);
+  alpha = refineAlpha(guidedMatte(alpha, src, W, H), src, W, H, P.nose);
   const crown = findCrown(alpha, W, H, info);
   info.crownY = crown.y;
   if (crown.cut) warnings.push("The top of the head is cut off in the photo, so the head size is estimated.");
@@ -125,6 +126,13 @@ export async function preparePortrait(img, { onStep } = {}) {
   onStep?.("colour");
   const fg = decontaminate(src, alpha, W, H);
   const tone = analyseTone(src, alpha, W, H, info);
+  if (tone.faceClipped > 0.12 || (tone.faceY ?? 0) > 0.9) {
+    warnings.push(
+      "The face is over-exposed (too bright) — some skin detail is lost. A retake with softer light or no flash is better.",
+    );
+  } else if (tone.faceY != null && tone.faceY < 0.22 && tone.sceneY < 0.25) {
+    warnings.push("The photo is very dark — it was brightened, but it may look grainy. A retake with more light is better.");
+  }
 
   const cache = new Map();
   const variant = ({ keepBackground = false, fix = true } = {}) => {
@@ -188,7 +196,7 @@ export async function cutoutWhole(img, { maxSide = 2400, onStep } = {}) {
   const H = work.height;
   const src = work.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, W, H).data;
   onStep?.("background");
-  const alpha = refineAlpha(await matte(work), src, W, H, null);
+  const alpha = refineAlpha(guidedMatte(await matte(work), src, W, H), src, W, H, null);
   onStep?.("colour");
   const fg = decontaminate(src, alpha, W, H);
   const cache = new Map();
@@ -289,13 +297,95 @@ async function findViaPerson(work) {
 }
 
 /**
+ * Fit the model's soft mask to the real edges of the photo (a "guided filter"). The model works on a small copy, so
+ * its mask is blurry and a little off; here each small window of the photo learns how mask follows colour, so the edge
+ * snaps to where the person's colour really changes — hair, ear and shoulder lines come out smooth and in the right
+ * place, with no bites or specks. Soft hair stays soft; the old background's colour is then taken out by decontaminate().
+ * @returns {Uint8ClampedArray} new mask
+ */
+function guidedMatte(alpha, src, W, H) {
+  const n = W * H;
+  const r = Math.max(4, Math.round(Math.max(W, H) * 0.0055));
+  const eps = 0.0005;
+  const box = (a) => boxMean(a, W, H, r);
+  const I = [0, 1, 2].map((c) => {
+    const a = new Float32Array(n);
+    for (let i = 0; i < n; i++) a[i] = src[i * 4 + c] / 255;
+    return a;
+  });
+  const p = new Float32Array(n);
+  for (let i = 0; i < n; i++) p[i] = alpha[i] / 255;
+  const mI = I.map(box);
+  const mp = box(p);
+  const prod = (x, y) => {
+    const a = new Float32Array(n);
+    for (let i = 0; i < n; i++) a[i] = x[i] * y[i];
+    return box(a);
+  };
+  const cov = I.map((ch, c) => {
+    const m = prod(ch, p);
+    for (let i = 0; i < n; i++) m[i] -= mI[c][i] * mp[i];
+    return m;
+  });
+  const v = {};
+  for (let x = 0; x < 3; x++) {
+    for (let y = x; y < 3; y++) {
+      const m = prod(I[x], I[y]);
+      for (let i = 0; i < n; i++) m[i] -= mI[x][i] * mI[y][i];
+      v[`${x}${y}`] = m;
+    }
+  }
+  // Per window: a = (Σ + eps·I)⁻¹ · cov, b = mean(p) − a · mean(I).
+  const A0 = new Float32Array(n);
+  const A1 = new Float32Array(n);
+  const A2 = new Float32Array(n);
+  const Bb = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const s00 = v["00"][i] + eps,
+      s01 = v["01"][i],
+      s02 = v["02"][i],
+      s11 = v["11"][i] + eps,
+      s12 = v["12"][i],
+      s22 = v["22"][i] + eps;
+    const c00 = s11 * s22 - s12 * s12,
+      c01 = s02 * s12 - s01 * s22,
+      c02 = s01 * s12 - s02 * s11,
+      c11 = s00 * s22 - s02 * s02,
+      c12 = s01 * s02 - s00 * s12,
+      c22 = s00 * s11 - s01 * s01;
+    const det = s00 * c00 + s01 * c01 + s02 * c02;
+    const k = 1 / det;
+    const q0 = cov[0][i],
+      q1 = cov[1][i],
+      q2 = cov[2][i];
+    const a0 = (c00 * q0 + c01 * q1 + c02 * q2) * k;
+    const a1 = (c01 * q0 + c11 * q1 + c12 * q2) * k;
+    const a2 = (c02 * q0 + c12 * q1 + c22 * q2) * k;
+    A0[i] = a0;
+    A1[i] = a1;
+    A2[i] = a2;
+    Bb[i] = mp[i] - a0 * mI[0][i] - a1 * mI[1][i] - a2 * mI[2][i];
+  }
+  const mA0 = box(A0);
+  const mA1 = box(A1);
+  const mA2 = box(A2);
+  const mB = box(Bb);
+  const out = new Uint8ClampedArray(n);
+  for (let i = 0; i < n; i++) {
+    const q = mA0[i] * I[0][i] + mA1[i] * I[1][i] + mA2[i] * I[2][i] + mB[i];
+    out[i] = Math.round(clamp(q, 0, 1) * 255);
+  }
+  return out;
+}
+
+/**
  * Clean up the model's mask: nothing outside the original photo, firmer edges,
  * and drop separate blobs (another person, a chair) that don't touch the main person.
  */
 function refineAlpha(alpha, src, W, H, seed) {
   const out = new Uint8ClampedArray(W * H);
   for (let i = 0; i < out.length; i++) {
-    const a = ((alpha[i] - 12) * 255) / (238 - 12);
+    const a = ((alpha[i] - 16) * 255) / (238 - 16);
     out[i] = (clamp(a, 0, 255) * src[i * 4 + 3]) / 255;
   }
   if (!seed) return out;

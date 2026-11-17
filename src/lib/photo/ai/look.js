@@ -5,7 +5,7 @@
 // renderPortrait() draws the result; results are cached per portrait, and a small "preview" copy keeps sliders smooth.
 import { applyAdjust, compileAdjust, isDefaultAdjust } from "../adjust";
 import { makeCanvas } from "../image";
-import { applyBrushes, blurBehind, clarity, denoise, fillOutside, heal, retouchFace } from "./retouch";
+import { applyBrushes, bleedColours, blurBehind, clarity, denoise, fillOutside, heal, retouchFace } from "./retouch";
 import { toneCurvePixel, toneTables } from "./tone";
 
 /**
@@ -26,6 +26,7 @@ export const defaultLook = Object.freeze({
   tint: 0,
   clarity: 0,
   denoise: 0,
+  glow: 0,
   blemish: 0,
   smooth: 0,
   even: 0,
@@ -216,6 +217,8 @@ function build(p, d, { keepBackground, fix, look, strokes }) {
   applyAdjust(rgb, n, compileAdjust(look.adj));
   // Kept background: corners that were outside the original photo get the colours next to them.
   const filled = keepBackground && fillOutside(rgb, src, W, H);
+  // Cut-out: hidden pixels at the edge take the person's colour, so the filters below can't pull in the old wall.
+  if (!keepBackground) bleedColours(rgb, alpha, W, H);
 
   // 3. Grain, spot-fix brush, then the face touch-up.
   if (look.denoise > 0) denoise(rgb, W, H, look.denoise / 100, Math.max(1, Math.round(2 * scale + 0.5)));

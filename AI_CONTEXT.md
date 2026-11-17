@@ -145,16 +145,28 @@ npm run format                    # Prettier (printWidth 130)
     WASM) in a module worker `public/workers/matte.js` (committed, not vendor). `matte(canvas)` → `Uint8ClampedArray` alpha.
     Input short side 512, multiple of 32, RGB scaled to −1…1.
   - `portrait.js` — `preparePortrait(img)`: face → level the eyes (any angle) → crop 3.6 × 4.3 forehead-to-chin heights at a fixed
-    face size → matte → `refineAlpha` (levels + drop blobs not touching the nose) → crown = top of hair from the mask (clamped;
+    face size → matte → `refineAlpha` (levels + drop blobs not touching the nose) (input first fitted by `guidedMatte`: a colour guided filter, r ≈ 0.55% of the long side, eps 0.0005, so the blurry low-res model mask snaps to the real colour edges — smooth hair/ear/shoulder lines, no bites or specks; replaced the old colour-voting `cleanEdges` on 17 Nov after tests on raw shop photos) → crown = top of hair from the mask (clamped;
     warns when the head is cut off) → `decontaminate` (removes old background colour from hair edges) → `analyseTone` (tone.js).
     Returns `{ width, height, face, warnings, variant({ keepBackground, fix }) }`
     (variants cached). `passportEdit(p, fw, fh, headSizes[x])` gives an Edit for `renderEdit(..., { fit: "contain", background })`.
     `headSizes` small/normal/large = head 55/63/73% of height. `cutoutWhole(img)` = whole-photo cut-out (remove-bg tool).
     Throws `NoFaceError` → UI offers "Crop by hand". Falls back to finding the person first when the face is too small.
     The returned portrait also has `data` = `{ W, H, src, fg, alpha, tone }` (raw pixels for the editor).
+  - **Room-light casts (17 Nov):** `neutralGains` measures the light's colour on the greyest quarter of the photo (pixels
+    max 60–250, lowest colour share) and is used (85%) only when it brings the face skin closer to natural skin
+    (`skinOffNatural`: hue 118°–142°, strength 0.19–0.31 in Cb/Cr — measured on BD faces); a green tree or teal shirt can't
+    fake a cast. Skin still clearly off (> 0.06) is moved 75% into the natural range by `skinToNatural` (strength only raised
+    when the hue is also wrong, never for a pale face); else the gentle `skinBalance`. Whole photo dark (scene < 30% / 40%)
+    → gamma may go to 0.58 / 0.65. Tone also returns `faceY`, `sceneY`, `faceClipped` → portrait warnings "over-exposed"
+    (> 12% blown or red > 245 or face > 90%) and "very dark" (face < 22% and scene < 25%). Tested on 112 variations of 7 shop
+    photos (bulb / tube / shade light, dark, over-exposed, darker / fairer skin, 5 walls, WhatsApp quality, tilt, far).
   - **Auto colour rule (12 Nov): "do no harm".** The skin white balance only moves the hue a little (≤ ±0.4 rad × 0.7) and
     **never increases colour strength** (only calms skin above 0.24); gains 0.86–1.16 and brightness kept; no auto vibrance;
-    S-curve 0.07; gamma 0.72–1.3. The old version boosted pale / flash faces to yellow — don't loosen these limits.
+    S-curve 0.035; gamma 0.72–1.3. The old version boosted pale / flash faces to yellow — don't loosen the colour limits.
+    **Brightness (17 Nov, BD studio look):** a face below 62% is lifted 70% of the way to 62% (gamma cap limits it); bright
+    faces stay, only above 74% is brought down. Plus the `glow` touch-up (retouch.js, skin mask only: soft lift up to ~20% at
+    100, diffused glow, 12% less colour, hue kept). Presets: Natural glow 40 (default), Studio 55, Strong 70. Goal: fresh,
+    bright, spot-free — never so white that the photo stops matching the person.
   - `tone.js` — automatic light & colour (pure arrays, also runs in Node). `analyseTone(src, alpha, W, H, face|null)` →
     `Tone { gain, lo, hi, curve, vibrance }`: white balance from the **face skin** (moves skin towards a natural skin hue,
     gains 0.7–1.5), levels on the person (stretches dull photos up to 80%), exposure only when the face is outside 48–66%
@@ -162,7 +174,7 @@ npm run format                    # Prettier (printWidth 130)
     `toneTables(t)` (per-channel prep) + `toneCurvePixel(t, r, g, b, out)`; `applyTone(rgba, n, t|null)` → RGB floats.
     No face → soft grey-world (remove-bg).
   - `retouch.js` — face touch-up on RGB float arrays using `face.pts`: skin mask = face oval − eyes/brows/lips/nostrils ×
-    skin-colour likelihood (+ neck). `retouchFace(rgb, W, H, face, look)` for blemish (dark / red / odd-coloured spots →
+    skin-colour likelihood (+ neck: no shape — full strength just under the jaw, fading smoothly to the sides (0.28→0.5 face widths) and down to +0.5 face heights, so the throat never gets a lighter oval; region reaches +0.62 face heights). `retouchFace(rgb, W, H, face, look)` for blemish (dark / red / odd-coloured spots →
     filled from around), smooth (guided filter, keeps texture), even (low-frequency chroma), shine, darkCircles, eyes, teeth,
     faceLight. **Never warps or reshapes** (ID-photo safe). Also `heal` (spot-fix brush, normalised-convolution fill + grain),
     `denoise`, `clarity`, `blurBehind` (background blur without person bleed), `fillOutside` (fills the empty corners of a kept
@@ -171,7 +183,7 @@ npm run format                    # Prettier (printWidth 130)
     automatic result. `look` = `defaultLook` keys: brightness/contrast/shadows/highlights/saturation/vibrance/warmth/tint/clarity
     (−100…100), denoise, the retouch keys, sharpen, edge, bgBlur (0…100). `enhanceLook` = the "One-tap enhance" values.
     Order: mask (edge + erase/restore strokes) → tone → manual tables → (bgBlur: person from `fg` over blurred `src`) →
-    `applyAdjust(look.adj)` → `fillOutside` → denoise → heal strokes → retouchFace → clone/dodge/burn (`applyBrushes`) →
+    `applyAdjust(look.adj)` → `fillOutside` (kept bg) / `bleedColours` (cut-out: hidden edge pixels take the person's colour so denoise / smooth / sharpen can't pull in the old wall = no light outline) → denoise → heal strokes → retouchFace → clone/dodge/burn (`applyBrushes`) →
     clarity → sharpen.
     `strokes` = `[{ mode: "erase"|"restore"|"heal", r, pts: [x,y,…] }]` in full-portrait pixels (erase/restore paint the mask,
     heal = spot fix; clone {dx, dy} = Clone Stamp offset; dodge / burn {s} = strength 0…1). Results cached on the portrait (last 6). `preview: true` works on an ~800 px copy; print uses full size.
@@ -412,6 +424,15 @@ Schema change → edit `schema.js`, tell the owner to run `npm run db:push`, upd
 
 | Date | Change | Next |
 | --- | --- | --- |
+| 2026-11-17 | **Tested on 112 photo variations + colour fix.** 7 real shop photos × 16 conditions (bulb / tube light / shade, dark, over-exposed, darker / fairer skin, white / clothes-coloured / busy / dark wall, bright sky, WhatsApp quality, tilted, far away), plus the real tools in the browser (Auto passport with 6 photos, presets, touch-up levels, keep background, editor tabs, PDF; Remove background; Joint photo; NID; Photo sheet) — no errors. Cut-out was steady on every background. Fixed: room-light colour casts are now removed (orange bulb, green tube light, blue shade), dark photos are lifted more, and new warnings for over-exposed or very dark photos. No new packages, no DB change. | Real shop photos under bulb light |
+| 2026-11-17 | **Fix: light oval on the throat.** The face touch-up (glow, smoothing, even colour) used a hard oval on the neck, so the throat showed a lighter round patch. The neck part now fades out smoothly to the sides and downwards. Checked on 4 new shop photos (man, boy, school girl, hijab). No new packages, no DB change. | — |
+| 2026-11-17 | **Background remover rebuilt on real photos.** The old edge cleaner (`cleanEdges`) was the cause of the bites, specks and jagged edges — removed. New `guidedMatte` fits the model's mask to the real edges of the photo (guided filter), then the usual blob removal and colour clean-up. Tested on 3 raw shop photos (office background, curly hair on sky, grey beard on green). Also used by Remove background. No new packages, no DB change. | Check more shop photos |
+| 2026-11-17 | **Fix: jagged cut-out edges.** The firmer edge judged single pixels, so hair shine and dress prints were cut out (bites). Now edges are decided by area: smooth hair and shoulders, no bites, halos still removed. | Tune on the owner's original photos |
+| 2026-11-17 | **Firmer hair edge.** Half-hair / half-wall haze is no longer strengthened, edge curve tighter, faintest 11% of the model mask dropped (`refineAlpha` 28…238). | Tune on the owner's original photos |
+| 2026-11-17 | **Cleaner hair and outline.** Tighter hair edge (wall-mixed hair tips no longer leave a grey haze) and no light outline around hair, ears and shoulders (filters no longer see the hidden wall colour). No new packages, no DB change. | Tune with real shop photos |
+| 2026-11-17 | **Hair edges solid.** `cleanEdges` now also raises the mask where the colour is the person's, so dark / curly hair against a light wall no longer prints as a faded grey cloud. No new packages, no DB change. | Tune with real shop photos |
+| 2026-11-17 | **Background leftovers removed.** New `cleanEdges` step after the cut-out: grey / green bits of the old background at the shoulders, ears and hair (half see-through or solid at the edge) are compared with the real background and person colours nearby and removed; no holes in light clothes. Also used by Remove background. No new packages, no DB change. | Tune with real shop photos |
+| 2026-11-17 | **Brighter faces (BD beauty look).** Auto colour no longer darkens faces: dim faces lifted towards a bright, fresh level, softer contrast curve. New **Glow** touch-up (bright, clear skin on the face and neck only; hair/eyes/lips keep depth) — on in Natural (40), Studio (55), Strong (70); slider in Edit › Retouch. Stronger spot / patch removal in the presets. Capped so the photo still matches the person. No new packages, no DB change. | Tune with real shop photos |
 | 2026-11-16 | **Sheets match the shop's studio PDF (6666_1.pdf) to within 0.1 mm.** Passport = 1.5 × 1.9 in (38.1 × 48.26), stamp = 0.75 × 0.95 in (19.05 × 24.13). Grid: same space at the left/right edges and between photos (5 across on A4 ≈ 3.25 mm), top edge 3.8 mm, rows 4.23 mm apart; 2 stamps lie **turned sideways, one above the other, centred** in one passport space; each photo gets a thin grey line (0.17 mm, #9d9d9d) just outside it. Page-wide guide lines are off. Settings saved as `sheet3:` (new defaults for everyone). No new packages, no DB change. | — |
 | 2026-11-15 | **Batch 5a: Deed writer** (দলিল / চুক্তিপত্র লেখা, new group "Deeds & documents"). The owner's 4 Word templates as fill-in deeds: office/shop rent, হাওলাদনামা (money lending, optional guarantor), old auto-rickshaw sale (3 sheets), auto-rickshaw buy-sell (1 sheet). Bangla form with Banglish typing (Avro, Ctrl+M, md → মোঃ), saved people to refill parties, amounts → Bangla digits + words, dates → Bangla, end of term worked out; every paragraph and condition editable (back to automatic, leave out, add). Prints on Legal stamp paper below the stamp (stamp space adjustable per sheet), পাতা / চলমান পাতা marks, paragraphs flow over sheets, fit into N sheets, font choice. Drafts and page settings kept in the browser. No new packages, no DB change. | More templates (sale deed, kot-bondhok, affidavit, applications), CV maker, cards |
 | 2026-11-12 | **Reuse a sheet + separate spacing.** Grid sheets: space left–right and up–down set separately. "Reuse this sheet": mark the spaces already printed (tap the map, or "Printed — mark as used" after printing), the next print fills only the free spaces; works across different sizes; "New sheet" clears. No new packages, no DB change. | Batch 5 when the owner sends his templates |

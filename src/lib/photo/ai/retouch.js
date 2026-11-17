@@ -34,22 +34,44 @@ const LIPS_OUT = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 2
 const LIPS_IN = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308, 415, 310, 311, 312, 13, 82, 81, 80, 191];
 
 /** Keys used by the touch-up (all 0…100, 0 = off). */
-export const retouchKeys = ["blemish", "smooth", "even", "shine", "darkCircles", "eyes", "teeth", "faceLight"];
+export const retouchKeys = ["glow", "blemish", "smooth", "even", "shine", "darkCircles", "eyes", "teeth", "faceLight"];
 
 /** One-tap touch-up levels. */
 export const beautyPresets = {
     off: { label: "Off", look: {} },
     natural: {
         label: "Natural",
-        look: { blemish: 55, smooth: 30, even: 25, shine: 30, darkCircles: 30, eyes: 20, sharpen: 20 },
+        look: { glow: 40, blemish: 70, smooth: 32, even: 35, shine: 30, darkCircles: 40, eyes: 20, sharpen: 20 },
     },
     studio: {
         label: "Studio",
-        look: { blemish: 80, smooth: 50, even: 45, shine: 50, darkCircles: 50, eyes: 35, teeth: 30, sharpen: 25, clarity: 10 },
+        look: {
+            glow: 55,
+            blemish: 85,
+            smooth: 48,
+            even: 50,
+            shine: 50,
+            darkCircles: 55,
+            eyes: 35,
+            teeth: 30,
+            sharpen: 25,
+            clarity: 8,
+        },
     },
     strong: {
         label: "Strong",
-        look: { blemish: 100, smooth: 75, even: 60, shine: 70, darkCircles: 70, eyes: 45, teeth: 45, sharpen: 25, clarity: 10 },
+        look: {
+            glow: 70,
+            blemish: 100,
+            smooth: 70,
+            even: 65,
+            shine: 65,
+            darkCircles: 70,
+            eyes: 45,
+            teeth: 45,
+            sharpen: 25,
+            clarity: 8,
+        },
     },
 };
 
@@ -185,7 +207,7 @@ function regionOf(face, W, H) {
     const rx0 = Math.max(0, Math.floor(x0 - fw * 0.12));
     const rx1 = Math.min(W, Math.ceil(x1 + fw * 0.12));
     const ry0 = Math.max(0, Math.floor(y0 - fh * 0.1));
-    const ry1 = Math.min(H, Math.ceil(y1 + fh * 0.55)); // neck
+    const ry1 = Math.min(H, Math.ceil(y1 + fh * 0.62)); // neck (its touch-up fades out by +0.5 face heights)
     return { x: rx0, y: ry0, w: Math.max(0, rx1 - rx0), h: Math.max(0, ry1 - ry0), fw, fh };
 }
 
@@ -257,10 +279,21 @@ export function retouchFace(rgb, W, H, face, look) {
     fillEllipse(holes, w, h, (n98.x + n327.x) / 2, (n98.y + n327.y) / 2 + nostrilW * 0.05, nostrilW * 0.72, nostrilW * 0.32);
     const holesD = dilate(holes, w, h, Math.max(1, fw * 0.012));
 
-    // Neck under the chin (only where it is skin-coloured, checked below).
+    // Neck under the chin (only where it is skin-coloured, checked below). No hard shape: full strength right under the jaw,
+    // fading out smoothly to the sides and downwards, so the throat never shows a lighter oval or a line.
     const chin = pt(face, 152, reg);
     const neck = new Float32Array(n);
-    fillEllipse(neck, w, h, chin.x, chin.y + reg.fh * 0.32, fw * 0.36, reg.fh * 0.36);
+    const jawY = Math.min(pt(face, 172, reg).y, pt(face, 397, reg).y);
+    for (let y = 0; y < h; y++) {
+        const down = 1 - smooth01(chin.y + reg.fh * 0.12, chin.y + reg.fh * 0.5, y);
+        const up = smooth01(jawY - reg.fh * 0.05, jawY + reg.fh * 0.05, y);
+        const v = down * up;
+        if (v <= 0) continue;
+        for (let x = 0; x < w; x++) {
+            const side = 1 - smooth01(fw * 0.28, fw * 0.5, Math.abs(x - chin.x));
+            neck[y * w + x] = v * side;
+        }
+    }
 
     // Reference skin colour: middle of the cheeks / forehead, mid brightness.
     const area = new Float32Array(n);
@@ -456,6 +489,35 @@ export function retouchFace(rgb, W, H, face, look) {
                 G[i] * k * (1 - c) + ref.g * (nl / ref.L) * c,
                 B[i] * k * (1 - c) + ref.b * (nl / ref.L) * c,
             );
+        }
+    }
+
+    // ——— glow: brighter, clearer, fresher skin (BD studio look). Only skin; capped so the person still looks like
+    // themselves (at 100 the skin is ~20% brighter, at the Natural level ~9%). Hair, eyes, brows and lips keep their depth.
+    const gw = amt("glow");
+    if (gw > 0) {
+        const L0 = new Float32Array(n);
+        for (let i = 0; i < n; i++) L0[i] = lum(R[i], G[i], B[i]);
+        const Lb = soft(L0, w, h, Math.max(2, fw * 0.05));
+        for (let i = 0; i < n; i++) {
+            const m = skin[i];
+            if (m < 0.01) continue;
+            const L = L0[i];
+            if (L < 1) continue;
+            const g = 0.45 * gw * m;
+            let nl = (L * (1 + g)) / (1 + (g * L) / 255); // soft lift, never clips
+            nl += (255 - nl) * (Lb[i] / 255) * 0.18 * gw * m; // soft diffused glow from the light around
+            const k = nl / L;
+            let r = R[i] * k,
+                g2 = G[i] * k,
+                b = B[i] * k;
+            // A little less colour = clearer, less dull/ruddy skin; the hue (warmth) stays.
+            const grey = lum(r, g2, b);
+            const c = 1 - 0.12 * gw * m;
+            r = grey + (r - grey) * c;
+            g2 = grey + (g2 - grey) * c;
+            b = grey + (b - grey) * c;
+            setPx(i, r, g2, b);
         }
     }
 
@@ -823,6 +885,38 @@ export function applyBrushes(rgb, W, H, strokes, scale = 1) {
                     for (let c = 0; c < 3; c++) rgb[j + c] = clamp(rgb[j + c] * k, 0, 255);
                 }
             }
+        }
+    }
+}
+
+/**
+ * Give the hidden pixels around a cut-out person the person's own colour (in place). Without this, smoothing and
+ * sharpening near the edge mix in the old wall colour that is hidden under the mask, and the person gets a light outline.
+ * @param {Uint8ClampedArray} alpha person mask
+ */
+export function bleedColours(rgb, alpha, W, H) {
+    const n = W * H;
+    const wgt = new Float32Array(n);
+    for (let i = 0; i < n; i++) wgt[i] = alpha[i] >= 200 ? 1 : 0;
+    const r = Math.max(3, Math.round(Math.max(W, H) * 0.01));
+    const bw = soft(wgt, W, H, r);
+    const bw2 = soft(wgt, W, H, r * 4);
+    const ch = [0, 1, 2].map((c) => {
+        const a = new Float32Array(n);
+        for (let i = 0; i < n; i++) a[i] = rgb[i * 3 + c] * wgt[i];
+        return [soft(a, W, H, r), soft(a, W, H, r * 4)];
+    });
+    for (let i = 0; i < n; i++) {
+        const a = alpha[i] / 255;
+        if (a >= 0.78) continue;
+        const near = bw[i] > 0.01;
+        const d = near ? bw[i] : bw2[i];
+        if (d < 1e-4) continue;
+        // Seen part keeps its colour; the hidden part takes the person's colour nearby.
+        const keep = Math.min(1, a / 0.78);
+        for (let c = 0; c < 3; c++) {
+            const f = (near ? ch[c][0][i] : ch[c][1][i]) / d;
+            rgb[i * 3 + c] = rgb[i * 3 + c] * keep + f * (1 - keep);
         }
     }
 }
