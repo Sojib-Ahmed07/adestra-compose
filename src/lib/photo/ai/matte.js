@@ -1,6 +1,12 @@
 // src/lib/photo/ai/matte.js
-// Background removal: MODNet portrait matting in a Web Worker (public/workers/matte.js).
-// matte(canvas) → one alpha value (0–255) per pixel of that canvas: 255 = person, 0 = background.
+// Background removal. Two engines, same answer: matte(canvas) → one alpha value (0–255) per pixel of that canvas,
+// 255 = person, 0 = background.
+//  - "best": BiRefNet on Cloudflare's servers (free plan, 5,000 photos a month) through our own /api/cutout, which
+//    forwards to the shop's Cloudflare Worker. Only offered when CUTOUT_URL / CUTOUT_KEY are set on the server.
+//    The photo leaves the browser (owner's decision, 18 Nov 2026).
+//  - "offline": MODNet in a Web Worker (public/workers/matte.js), on this computer.
+// If "best" fails (no internet, monthly limit, Worker down) the photo is done offline and a notice is sent
+// (onCutoutNotice) — a photo never fails because of the cloud.
 import { makeCanvas } from "../image";
 
 const SIDE = 512; // the model's preferred short side
@@ -48,17 +54,119 @@ function call(payload, transfer = []) {
 
 /** Load the model in the background so the first photo is faster. */
 export function warmMatte() {
-  call({}).catch(() => {});
+  call({}).catch(() => { });
 }
 
 const snap = (v) => Math.max(STRIDE, Math.round(v / STRIDE) * STRIDE);
 
+// ——— engine choice ———
+
+const MODE_KEY = "cutout:mode";
+let cloud = null; // Promise<boolean>: is the Cloudflare cut-out set up on the server?
+const listeners = new Set();
+
+/** Is the Cloudflare cut-out set up? (asks the server once) */
+export function cloudCutoutReady() {
+  if (!cloud) {
+    cloud = fetch("/api/cutout", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { enabled: false }))
+      .then((d) => !!d.enabled)
+      .catch(() => false);
+  }
+  return cloud;
+}
+
+/** "best" (Cloudflare) or "offline". Saved on this computer; "best" by default. */
+export function getCutoutMode() {
+  try {
+    return localStorage.getItem(MODE_KEY) === "offline" ? "offline" : "best";
+  } catch {
+    return "best";
+  }
+}
+export function setCutoutMode(mode) {
+  try {
+    localStorage.setItem(MODE_KEY, mode === "offline" ? "offline" : "best");
+  } catch { }
+}
+
+/** Listen for "the cloud cut-out failed, done offline" notices. Returns an unsubscribe function. */
+export function onCutoutNotice(fn) {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+const notify = (msg) => listeners.forEach((fn) => fn(msg));
+
+const CLOUD_SIDE = 1600; // longest side sent to Cloudflare (keeps the upload small and under Vercel's 4.5 MB limit)
+
+async function cloudMatte(canvas) {
+  const W = canvas.width;
+  const H = canvas.height;
+  const k = Math.min(1, CLOUD_SIDE / Math.max(W, H));
+  const w = Math.max(1, Math.round(W * k));
+  const h = Math.max(1, Math.round(H * k));
+  const send = makeCanvas(w, h);
+  const sctx = send.getContext("2d");
+  sctx.fillStyle = "#fff";
+  sctx.fillRect(0, 0, w, h);
+  sctx.imageSmoothingQuality = "high";
+  sctx.drawImage(canvas, 0, 0, w, h);
+  const blob = await new Promise((res) => send.toBlob(res, "image/jpeg", 0.92));
+  if (!blob) throw new Error("could not read the photo");
+
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 60000);
+  let res;
+  try {
+    res = await fetch("/api/cutout", {
+      method: "POST",
+      body: blob,
+      headers: { "content-type": "image/jpeg" },
+      signal: ctl.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!res.ok) {
+    let msg = `error ${res.status}`;
+    try {
+      msg = (await res.json()).error || msg;
+    } catch { }
+    throw new Error(msg);
+  }
+  const bmp = await createImageBitmap(await res.blob());
+  const big = makeCanvas(W, H);
+  const bctx = big.getContext("2d", { willReadFrequently: true });
+  bctx.imageSmoothingEnabled = true;
+  bctx.imageSmoothingQuality = "high";
+  bctx.drawImage(bmp, 0, 0, W, H);
+  bmp.close?.();
+  const rgba = bctx.getImageData(0, 0, W, H).data;
+  const alpha = new Uint8ClampedArray(W * H);
+  for (let i = 0; i < alpha.length; i++) alpha[i] = rgba[i * 4 + 3];
+  return alpha;
+}
+
 /**
- * Person mask for a canvas.
+ * Person mask for a canvas, with the chosen engine.
  * @param {HTMLCanvasElement} canvas
+ * @param {{ local?: boolean }} [opts]  local: always use the offline engine (quick checks)
  * @returns {Promise<Uint8ClampedArray>} alpha, canvas.width × canvas.height
  */
-export async function matte(canvas) {
+export async function matte(canvas, { local = false } = {}) {
+  if (!local && getCutoutMode() === "best" && (await cloudCutoutReady())) {
+    try {
+      return await cloudMatte(canvas);
+    } catch (err) {
+      const why = (err?.name === "AbortError" ? "it took too long" : err?.message || "unknown error").replace(/\.+$/, "");
+      notify(`Best cut-out (Cloudflare) didn't work — ${why}. This photo was done offline.`);
+    }
+  }
+  return localMatte(canvas);
+}
+
+/** Offline engine: MODNet in the Web Worker. */
+async function localMatte(canvas) {
   const W = canvas.width;
   const H = canvas.height;
   const ratio = SIDE / Math.min(W, H);

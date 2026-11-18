@@ -11,6 +11,7 @@ import { getPhotoSize, photoSizes } from "@/lib/photo/sizes";
 import { useStoredState } from "@/lib/use-stored";
 import { cn } from "@/lib/utils";
 import { BgPicker, KEEP } from "@/components/photo/bg-picker";
+import { CutoutChoice } from "@/components/photo/cutout-choice";
 import { PassportEditor } from "@/components/photo/passport-editor";
 import { PersonCard } from "@/components/photo/person-card";
 import { usePortraits } from "@/components/photo/use-portraits";
@@ -239,6 +240,7 @@ export function AutoPassportTool() {
             <Field label="Background">
               <BgPicker value={settings.bg} onChange={(bg) => set({ bg })} id="ap-bg" />
             </Field>
+            <CutoutChoice />
             <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
               <Field label="Head size">
                 <Segmented

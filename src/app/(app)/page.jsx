@@ -11,7 +11,7 @@ export default async function HomePage() {
     <>
       <PageHeader
         title={shop.name}
-        description="Pick a tool. Photos never leave this computer — everything is processed in the browser."
+        description="Pick a tool. Photos are processed in the browser (only the optional Best background removal sends them to the shop's Cloudflare account)."
       />
       <ToolHub />
     </>

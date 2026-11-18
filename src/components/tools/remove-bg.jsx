@@ -10,6 +10,7 @@ import { loadImage, makeCanvas } from "@/lib/photo/image";
 import { useStoredState } from "@/lib/use-stored";
 import { zipFiles } from "@/lib/zip";
 import { BgPicker } from "@/components/photo/bg-picker";
+import { CutoutChoice } from "@/components/photo/cutout-choice";
 import { Button } from "@/components/ui/button";
 import { Checkbox, Field } from "@/components/ui/form";
 import { Segmented, useToast } from "@/components/ui/interactive";
@@ -79,8 +80,7 @@ export function RemoveBgTool() {
   };
 
   const ext = settings.mode === "clear" ? "png" : "jpg";
-  const blobOf = (x) =>
-    canvasToBlob(finalCanvas(x.cut, settings), settings.mode === "clear" ? "image/png" : "image/jpeg", 0.95);
+  const blobOf = (x) => canvasToBlob(finalCanvas(x.cut, settings), settings.mode === "clear" ? "image/png" : "image/jpeg", 0.95);
 
   const saveOne = async (x) => downloadBlob(await blobOf(x), `${x.name}-no-background.${ext}`);
   const done = list.filter((x) => x.status === "done");
@@ -123,7 +123,8 @@ export function RemoveBgTool() {
               onChange={(e) => set({ fix: e.target.checked })}
             />
           </div>
-          <p className="text-xs text-subtle">Made for photos of people. Everything runs on this computer — nothing is uploaded.</p>
+          <CutoutChoice />
+          <p className="text-xs text-subtle">Made for photos of people.</p>
         </Step>
       </Card>
 

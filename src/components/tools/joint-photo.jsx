@@ -10,6 +10,7 @@ import { canvasToBlob, downloadBlob } from "@/lib/photo/export";
 import { defaultEdit, drawEdit, makeCanvas } from "@/lib/photo/image";
 import { PX_PER_MM } from "@/lib/photo/sizes";
 import { useStoredState } from "@/lib/use-stored";
+import { CutoutChoice } from "@/components/photo/cutout-choice";
 import { BgPicker, KEEP } from "@/components/photo/bg-picker";
 import { PassportEditor } from "@/components/photo/passport-editor";
 import { PersonCard } from "@/components/photo/person-card";
@@ -340,6 +341,7 @@ export function JointPhotoTool() {
 
         <Card className="p-5">
           <Step n={2} title={`Photos — 2 to ${MAX} people, left to right`}>
+            <CutoutChoice />
             {people.length < MAX ? (
               <FileDrop
                 multiple

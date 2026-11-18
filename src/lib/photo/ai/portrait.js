@@ -241,7 +241,7 @@ function fitCanvas(img, max) {
 /** Faces too small for the detector (full-body photos): find the person first, then look at the top of them. */
 async function findViaPerson(work) {
   const small = fitCanvas(work, 768);
-  const a = await matte(small);
+  const a = await matte(small, { local: true }); // only a rough person box is needed here
   const w = small.width;
   const h = small.height;
   let x0 = w,

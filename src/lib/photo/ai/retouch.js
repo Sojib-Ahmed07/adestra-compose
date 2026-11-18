@@ -206,7 +206,7 @@ function regionOf(face, W, H) {
     const fh = y1 - y0;
     const rx0 = Math.max(0, Math.floor(x0 - fw * 0.12));
     const rx1 = Math.min(W, Math.ceil(x1 + fw * 0.12));
-    const ry0 = Math.max(0, Math.floor(y0 - fh * 0.1));
+    const ry0 = Math.max(0, Math.floor(y0 - fh * 0.5)); // upper forehead up to the hairline (touch-up fades out there)
     const ry1 = Math.min(H, Math.ceil(y1 + fh * 0.62)); // neck (its touch-up fades out by +0.5 face heights)
     return { x: rx0, y: ry0, w: Math.max(0, rx1 - rx0), h: Math.max(0, ry1 - ry0), fw, fh };
 }
@@ -295,10 +295,37 @@ export function retouchFace(rgb, W, H, face, look) {
         }
     }
 
+    // Upper forehead: the face mesh stops part-way up the forehead, so a hard edge there showed as a light curved line.
+    // Above the mesh the touch-up carries on at full strength and fades out over the top 0.15 face heights; the skin
+    // colour check below stops it at the hair, so no shape shows. Narrows towards the temples.
+    const top = new Float32Array(w).fill(-1);
+    for (let x = 0; x < w; x++) {
+        for (let y = 0; y < h; y++) {
+            if (oval[y * w + x] > 0.5) {
+                top[x] = y;
+                break;
+            }
+        }
+    }
+    const fcx = pt(face, 10, reg).x;
+    const forehead = new Float32Array(n);
+    for (let x = 0; x < w; x++) {
+        if (top[x] < 0) continue;
+        const side = 1 - smooth01(fw * 0.3, fw * 0.48, Math.abs(x - fcx));
+        if (side <= 0) continue;
+        for (let y = Math.max(0, Math.floor(top[x] - reg.fh * 0.5)); y < top[x]; y++) {
+            forehead[y * w + x] = side * (1 - smooth01(reg.fh * 0.3, reg.fh * 0.45, top[x] - y));
+        }
+    }
+    const faceZone = new Float32Array(n);
+    for (let i = 0; i < n; i++) faceZone[i] = Math.max(oval[i], forehead[i]);
+
     // Reference skin colour: middle of the cheeks / forehead, mid brightness.
     const area = new Float32Array(n);
-    for (let i = 0; i < n; i++) area[i] = oval[i] * (1 - holesD[i]);
-    const ref = skinReference(R, G, B, area, n);
+    for (let i = 0; i < n; i++) area[i] = faceZone[i] * (1 - holesD[i]);
+    const refArea = new Float32Array(n);
+    for (let i = 0; i < n; i++) refArea[i] = oval[i] * (1 - holesD[i]); // reference from the mesh face only (no hair)
+    const ref = skinReference(R, G, B, refArea, n);
     if (!ref) return;
 
     // Skin likelihood by colour (normalised chroma, so shading doesn't matter).
@@ -316,12 +343,12 @@ export function retouchFace(rgb, W, H, face, look) {
     }
     // Skin = (face oval minus holes, or neck) × colour likelihood, feathered.
     let skin = new Float32Array(n);
-    for (let i = 0; i < n; i++) skin[i] = Math.max(area[i], neck[i] * (1 - oval[i])) * like[i];
+    for (let i = 0; i < n; i++) skin[i] = Math.max(area[i], neck[i] * (1 - faceZone[i])) * like[i];
     skin = soft(skin, w, h, Math.max(1, fw * 0.02));
     for (let i = 0; i < n; i++) skin[i] = clamp(skin[i] * 1.25, 0, 1);
     // Face-only skin (not the neck) for spot removal and shine.
     const faceSkin = new Float32Array(n);
-    for (let i = 0; i < n; i++) faceSkin[i] = skin[i] * oval[i];
+    for (let i = 0; i < n; i++) faceSkin[i] = skin[i] * faceZone[i];
 
     const setPx = (i, r, g, b) => {
         R[i] = r;

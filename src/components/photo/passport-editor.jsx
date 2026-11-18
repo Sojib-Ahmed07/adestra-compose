@@ -2,7 +2,25 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Brush, Crosshair, Eraser, Eye, Moon, Redo2, RotateCcw, Sparkles, Stamp, Sun, Undo2, Wand2, ZoomIn } from "lucide-react";
+import {
+  Brush,
+  Crosshair,
+  Eraser,
+  Eye,
+  Hand,
+  Maximize,
+  Moon,
+  Redo2,
+  RotateCcw,
+  ScanFace,
+  Sparkles,
+  Stamp,
+  Sun,
+  Undo2,
+  Wand2,
+  ZoomIn,
+  ZoomOut,
+} from "lucide-react";
 import { histogram } from "@/lib/photo/adjust";
 import { defaultLook, enhanceLook, renderPortrait } from "@/lib/photo/ai/look";
 import { passportEdit } from "@/lib/photo/ai/portrait";
@@ -159,10 +177,10 @@ export function PassportEditor({
   const setEdit = (e) => change({ edits: { ...p.edits, [sizeKey]: e } }, true);
   const fit = auto ? "contain" : "cover";
 
-  const [faceZoom, setFaceZoom] = useState(true);
+  // Retouch opens zoomed on the face; the view can be zoomed / moved anywhere (see BrushView).
   const faceEdit = useMemo(
-    () => (auto && faceZoom ? zoomToFace(edit, p.portrait, row.w / row.h, 2.1) : edit),
-    [auto, faceZoom, edit, p.portrait, row.w, row.h],
+    () => (auto ? zoomToFace(edit, p.portrait, row.w / row.h, 2.1) : null),
+    [auto, edit, p.portrait, row.w, row.h],
   );
 
   // Brushes.
@@ -375,7 +393,8 @@ export function PassportEditor({
                   p={p}
                   source={source}
                   original={original}
-                  edit={faceEdit}
+                  edit={edit}
+                  focus={faceEdit}
                   aspect={row.w / row.h}
                   fill={fill}
                   disabled={false}
@@ -385,18 +404,6 @@ export function PassportEditor({
                   picking={tool === "clone" && (clone.picking || !clone.src)}
                   onPick={(q) => setClone({ src: q, offset: null, picking: false })}
                 />
-                <div className="flex justify-center">
-                  <button
-                    type="button"
-                    onClick={() => setFaceZoom((z) => !z)}
-                    className={cn(
-                      "inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-medium",
-                      faceZoom ? "bg-brand-50 text-brand-700" : "text-ink-700 hover:bg-ink-50",
-                    )}
-                  >
-                    <ZoomIn className="h-4 w-4" /> {faceZoom ? "Zoomed on the face" : "Zoom on the face"}
-                  </button>
-                </div>
               </>
             ) : (
               <FramePreview source={source} original={original} edit={edit} aspect={row.w / row.h} fill={fill} />
@@ -711,17 +718,84 @@ const brushLook = {
   burn: { fill: "rgba(120,53,15,0.35)", line: "#78350f", label: "Burn (darken)", Icon: Moon },
 };
 
-/** Paint erase / restore / spot-fix strokes directly on the framed photo. */
-function BrushView({ p, source, original, edit, aspect, fill, disabled, onStroke, brush, marker, picking, onPick }) {
+/** View that shows `focus` (an Edit zoomed on part of the photo) on top of `base`: zoom k + shift v (frame units). */
+function viewFor(base, focus) {
+  if (!focus) return { k: 1, x: 0, y: 0 };
+  const b = { ...defaultEdit, ...base };
+  const k = focus.zoom / b.zoom;
+  return { k, x: focus.x - b.x * k, y: focus.y - b.y * k };
+}
+const MAX_VIEW_ZOOM = 10;
+
+/**
+ * Paint erase / restore / spot-fix strokes directly on the framed photo. Photoshop-style navigation:
+ * mouse wheel zooms at the pointer, Space + drag / right-drag / middle-drag (or the Hand button) moves the photo,
+ * "Face" and "Whole photo" jump to a view. The view only changes what is shown, never the print.
+ */
+function BrushView({ p, source, original, edit, focus, aspect, fill, disabled, onStroke, brush, marker, picking, onPick }) {
   const [boxRef, size] = useFrameSize(aspect);
   const canvasRef = useRef(null);
   const overlayRef = useRef(null);
   const stroke = useRef(null);
+  const pan = useRef(null);
   const [compare, setCompare] = useState(false);
+  const [view, setView] = useState(() => viewFor(edit, focus));
+  const [hand, setHand] = useState(false);
+  const [space, setSpace] = useState(false);
   const dpr = typeof window === "undefined" ? 1 : Math.min(window.devicePixelRatio || 1, 2);
   const W = size.w * dpr;
   const H = size.h * dpr;
-  const e = { ...defaultEdit, ...edit };
+  const base = { ...defaultEdit, ...edit };
+  const e = { ...base, zoom: base.zoom * view.k, x: base.x * view.k + view.x, y: base.y * view.k + view.y };
+  const moving = hand || space;
+
+  // Space held = Hand tool (as in Photoshop), unless typing in a box.
+  useEffect(() => {
+    const typing = (t) => t && (t.tagName === "TEXTAREA" || t.isContentEditable || (t.tagName === "INPUT" && t.type === "text"));
+    const down = (ev) => {
+      if (ev.code === "Space" && !typing(ev.target)) {
+        if (!ev.repeat) setSpace(true);
+        ev.preventDefault();
+      }
+    };
+    const up = (ev) => {
+      if (ev.code === "Space") setSpace(false);
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+    };
+  }, []);
+
+  // Zoom keeping the display point (fx, fy) — frame offsets from the centre, in frame units — still.
+  const zoomAt = (factor, fx = 0, fy = 0) =>
+    setView((v) => {
+      const k = Math.min(MAX_VIEW_ZOOM, Math.max(0.5, v.k * factor));
+      const f = k / v.k;
+      // A point at display offset d moves to fx + (d - fx) * f, so the shift does the same.
+      const bx = base.x * v.k + v.x;
+      const by = base.y * v.k + v.y;
+      const nx = fx + (bx - fx) * f;
+      const ny = fy + (by - fy) * f;
+      return { k, x: nx - base.x * k, y: ny - base.y * k };
+    });
+
+  // Mouse wheel zooms at the pointer (non-passive so the page doesn't scroll).
+  useEffect(() => {
+    const o = overlayRef.current;
+    if (!o) return;
+    const onWheel = (ev) => {
+      ev.preventDefault();
+      const r = o.getBoundingClientRect();
+      const fx = (ev.clientX - r.left) / r.width - 0.5;
+      const fy = (ev.clientY - r.top) / r.height - 0.5;
+      zoomAt(Math.exp(-ev.deltaY * 0.0015), fx, fy);
+    };
+    o.addEventListener("wheel", onWheel, { passive: false });
+    return () => o.removeEventListener("wheel", onWheel);
+  });
   const iw = srcW(source);
   const ih = srcH(source);
   const quarter = e.turn % 2 === 1;
@@ -734,14 +808,15 @@ function BrushView({ p, source, original, edit, aspect, fill, disabled, onStroke
   useEffect(() => {
     const c = canvasRef.current;
     if (!c) return;
-    const out = renderEdit(compare && original ? original : source, edit, W, H, { fit: "contain", background: fill });
+    const out = renderEdit(compare && original ? original : source, e, W, H, { fit: "contain", background: fill });
     c.width = out.width;
     c.height = out.height;
     c.getContext("2d").drawImage(out, 0, 0);
     const o = overlayRef.current;
     o.width = out.width;
     o.height = out.height;
-  }, [source, original, compare, edit, W, H, fill]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source, original, compare, JSON.stringify(e), W, H, fill]);
 
   const local = (ev) => {
     const rect = overlayRef.current.getBoundingClientRect();
@@ -810,6 +885,13 @@ function BrushView({ p, source, original, edit, aspect, fill, disabled, onStroke
   };
 
   const onDown = (ev) => {
+    if (moving || ev.button === 1 || ev.button === 2) {
+      // Move the photo (Hand).
+      ev.preventDefault();
+      overlayRef.current.setPointerCapture(ev.pointerId);
+      pan.current = { x: ev.clientX, y: ev.clientY, v: view };
+      return;
+    }
     if (disabled) return;
     ev.preventDefault();
     if (brush.mode === "clone" && (ev.altKey || picking)) {
@@ -826,7 +908,12 @@ function BrushView({ p, source, original, edit, aspect, fill, disabled, onStroke
     stroke.current = { mode: brush.mode, r: (radiusDisplay / s) * toFull, pts: [Math.round(q.x), Math.round(q.y)] };
   };
   const onMove = (ev) => {
-    if (disabled) return;
+    if (pan.current) {
+      const st = pan.current;
+      setView({ ...st.v, x: st.v.x + (ev.clientX - st.x) / size.w, y: st.v.y + (ev.clientY - st.y) / size.h });
+      return;
+    }
+    if (disabled || moving) return;
     const pt = local(ev);
     if (!stroke.current) {
       drawDot(pt, false);
@@ -837,6 +924,7 @@ function BrushView({ p, source, original, edit, aspect, fill, disabled, onStroke
     stroke.current.pts.push(Math.round(q.x), Math.round(q.y));
   };
   const onUp = () => {
+    pan.current = null;
     if (!stroke.current) return;
     const done = stroke.current;
     stroke.current = null;
@@ -858,9 +946,16 @@ function BrushView({ p, source, original, edit, aspect, fill, disabled, onStroke
             style={{ width: size.w, height: size.h }}
             className={cn(
               "absolute inset-0 touch-none",
-              disabled ? "cursor-not-allowed" : brush.mode === "clone" && picking ? "cursor-copy" : "cursor-crosshair",
+              moving
+                ? "cursor-grab active:cursor-grabbing"
+                : disabled
+                  ? "cursor-not-allowed"
+                  : brush.mode === "clone" && picking
+                    ? "cursor-copy"
+                    : "cursor-crosshair",
             )}
             aria-label={look.label}
+            onContextMenu={(ev) => ev.preventDefault()}
             onPointerDown={onDown}
             onPointerMove={onMove}
             onPointerUp={onUp}
@@ -869,7 +964,11 @@ function BrushView({ p, source, original, edit, aspect, fill, disabled, onStroke
               if (!stroke.current) overlayRef.current?.getContext("2d").clearRect(0, 0, W, H);
             }}
           />
-          {!disabled ? (
+          {moving ? (
+            <span className="pointer-events-none absolute top-2 left-2 inline-flex items-center gap-1 rounded-md bg-white/90 px-2 py-1 text-[11px] font-medium text-ink-800 shadow-xs">
+              <Hand className="h-3.5 w-3.5" /> Drag to move
+            </span>
+          ) : !disabled ? (
             <span className="pointer-events-none absolute top-2 left-2 inline-flex items-center gap-1 rounded-md bg-white/90 px-2 py-1 text-[11px] font-medium text-ink-800 shadow-xs">
               <look.Icon className="h-3.5 w-3.5" />
               {brush.mode === "clone" && picking ? "Tap where to copy from" : look.label}
@@ -877,6 +976,34 @@ function BrushView({ p, source, original, edit, aspect, fill, disabled, onStroke
           ) : null}
         </div>
       </div>
+      <div className="flex flex-wrap items-center justify-center gap-1">
+        <Button size="icon" variant="ghost" title="Zoom out" aria-label="Zoom out" onClick={() => zoomAt(1 / 1.25)}>
+          <ZoomOut className="h-4 w-4" />
+        </Button>
+        <span className="w-12 text-center text-xs text-muted tabular-nums">{Math.round(view.k * 100)}%</span>
+        <Button size="icon" variant="ghost" title="Zoom in" aria-label="Zoom in" onClick={() => zoomAt(1.25)}>
+          <ZoomIn className="h-4 w-4" />
+        </Button>
+        <Button
+          size="sm"
+          variant={hand ? "accent" : "ghost"}
+          title="Move the photo (or hold Space and drag)"
+          onClick={() => setHand((h) => !h)}
+        >
+          <Hand className="h-4 w-4" /> Hand
+        </Button>
+        {focus ? (
+          <Button size="sm" variant="ghost" onClick={() => setView(viewFor(base, focus))}>
+            <ScanFace className="h-4 w-4" /> Face
+          </Button>
+        ) : null}
+        <Button size="sm" variant="ghost" onClick={() => setView({ k: 1, x: 0, y: 0 })}>
+          <Maximize className="h-4 w-4" /> Whole photo
+        </Button>
+      </div>
+      <p className="text-center text-[11px] text-subtle">
+        Scroll to zoom · hold Space (or right-click) and drag to move · zoom only changes the view, not the print
+      </p>
       {original ? <CompareButton compare={compare} setCompare={setCompare} /> : null}
     </div>
   );
