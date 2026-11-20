@@ -78,6 +78,16 @@ export const tools = [
     keywords: "teletalk bpsc job application photo signature 300x300 300x80 resize kb চাকরি স্বাক্ষর",
   },
   {
+    slug: "cv-maker",
+    group: "job",
+    name: "CV maker",
+    bangla: "সিভি / রিজিউম তৈরি",
+    description:
+      "Fill in the form — a neat 2-page CV with photo, every row lined up. Print in colour, save as PDF or Word, keep it for next time.",
+    icon: "FileUser",
+    keywords: "cv resume biodata job application word docx print bio data সিভি রিজিউম বায়োডাটা জীবনবৃত্তান্ত",
+  },
+  {
     slug: "pdf-merge",
     group: "pdf",
     name: "Merge PDFs",

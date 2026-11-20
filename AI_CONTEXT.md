@@ -7,7 +7,7 @@
 > create or change, list any `npm install` / `db:push` / env changes, and ask for the current contents of any file you need
 > to edit that you haven't been shown. **Never guess what an existing file contains.**
 
-Last updated: **15 Nov 2026**, after Batch 5a — Deed writer (the owner's 4 deed templates, Bangla form → print on stamp paper).
+Last updated: **20 Nov 2026** — CV maker (always 2 pages, colour print, Save Word, saved CVs).
 
 ---
 
@@ -20,8 +20,8 @@ Last updated: **15 Nov 2026**, after Batch 5a — Deed writer (the owner's 4 dee
 | Money | **No payments, no credits.** Every tool is free to use for the shop's staff. |
 | Inspiration | Feature set of sohozkaj.com and alltoolsbd.netlify.app (see §10). Build our own versions — never copy their text, template artwork or branding. |
 | Language | **JavaScript only** (`.js` / `.jsx`). No TypeScript files, no type annotations (JSDoc is fine). |
-| Stack | Next.js **16.4.4 (pinned)** (App Router, Turbopack) · React **19.3** · Tailwind CSS **4.3.4 (pinned, via `@tailwindcss/postcss`)** · lucide-react · zod **v4** · Better Auth **1.7** · Drizzle ORM + `pg` · Neon Postgres · pdf-lib · pdfjs-dist **6** · qpdf (WASM, `@neslinesli93/qpdf-wasm`) · fflate (ZIP) · bijoy-unicode-converter + bijoy2unicode · avro-phonetic · tesseract.js **7** · onnxruntime-web (WASM) + MODNet model · MediaPipe Face Mesh (legacy) |
-| Privacy | **Customer photos and documents never leave the browser.** All photo/image work is done with `<canvas>` in the browser. The database holds logins, settings and the shop accounts (sales, expenses, customers, payments). |
+| Stack | Next.js **16.4.6 (pinned)** (App Router, Turbopack) · React **19.3** · Tailwind CSS **4.3.4 (pinned, via `@tailwindcss/postcss`)** · lucide-react · zod **v4** · Better Auth **1.7** · Drizzle ORM + `pg` · Neon Postgres · pdf-lib · pdfjs-dist **6** · qpdf (WASM, `@neslinesli93/qpdf-wasm`) · fflate (ZIP, also builds the CV .docx) · @fontsource/poppins **5.3.0** (CV font) · bijoy-unicode-converter + bijoy2unicode · avro-phonetic · tesseract.js **7** · onnxruntime-web (WASM) + MODNet model · MediaPipe Face Mesh (legacy) |
+| Privacy | Customer photos and documents are processed in the browser with `<canvas>`. **One exception (owner's decision, 18 Nov 2026):** the optional "Best" background removal sends the photo to the shop's own Cloudflare Worker (see §4 "Best cut-out"); "Offline" sends nothing. The database holds logins, settings and the shop accounts (sales, expenses, customers, payments). |
 | UI language | English labels with Bangla tool names/subtitles. Bangla text uses Noto Sans Bengali. |
 | Owner's machine | Windows, PowerShell. Node 20.9+. See §4 "Native files on Windows". |
 
@@ -46,7 +46,7 @@ Last updated: **15 Nov 2026**, after Batch 5a — Deed writer (the owner's 4 dee
 
 1. JavaScript only.
 2. Photos/documents are processed in the browser. Don't upload customer files to a server unless a batch explicitly needs it
-   (and then say so to the owner first).
+   (and then say so to the owner first). The only upload today is the optional Best cut-out (§4); keep its Offline choice.
 3. Don't redesign. Use the tokens (§5) and components in `src/components/ui`. No UI libraries (shadcn, MUI, Chakra…).
 4. Server Components by default; `"use client"` only where needed. Never import `src/db/**` or `src/server/**` in a client file.
 5. Every Server Action re-checks the user (`getCurrentUser()` / `getOwner()`), validates input with zod, returns
@@ -71,7 +71,8 @@ npm run format                    # Prettier (printWidth 130)
 ```
 
 - `user:add` again for the same email = change password (and `--owner` promotes). It also switches a removed person back on.
-- Env vars: `DATABASE_URL`, `NEXT_PUBLIC_SITE_URL` (must match the browser URL), `AUTH_SECRET` (32+ chars).
+- Env vars: `DATABASE_URL`, `NEXT_PUBLIC_SITE_URL` (must match the browser URL), `AUTH_SECRET` (32+ chars). Optional:
+  `CUTOUT_URL` + `CUTOUT_KEY` (Best cut-out on Cloudflare; empty = offline only).
 
 ---
 
@@ -79,7 +80,7 @@ npm run format                    # Prettier (printWidth 130)
 
 - **Native files on Windows (IMPORTANT).** Windows Smart App Control / Application Control blocks unsigned native `.node`
   files ("An Application Control policy has blocked this file" → "Turbopack is not supported… only WASM bindings"). The owner
-  turned Smart App Control off on 10 Nov 2026. `next` 16.4.4 and `tailwindcss` / `@tailwindcss/postcss` 4.3.4 are pinned to
+  turned Smart App Control off on 10 Nov 2026. `next` 16.4.6 (owner upgraded from 16.4.4) and `tailwindcss` / `@tailwindcss/postcss` 4.3.4 are pinned to
   exact versions; keep them pinned and don't run `npm update`. When adding packages, prefer pure JavaScript / WebAssembly ones —
   every Batch 2–3 package is (pdf.js, qpdf, tesseract.js, converters).
 - **Next 16.4:** `params` / `searchParams` are Promises (`const { x } = await searchParams`). Read `node_modules/next/dist/docs/`
@@ -141,9 +142,22 @@ npm run format                    # Prettier (printWidth 130)
     `findFaces(canvas)` → biggest first `{ eyeL, eyeR, top (forehead, lm 10), chin (152), nose, sideL, sideR, box, pts }` in pixels
     (`pts` = all 468 mesh points as a Float32Array x, y, …; portrait.js maps them into `face.pts` of the portrait).
     Calls are queued and `reset()` before each photo (no tracking between photos).
-  - `matte.js` — MODNet portrait matting (Apache-2.0 model from `@dloizides/background-removal`, run by `onnxruntime-web`
-    WASM) in a module worker `public/workers/matte.js` (committed, not vendor). `matte(canvas)` → `Uint8ClampedArray` alpha.
-    Input short side 512, multiple of 32, RGB scaled to −1…1.
+  - `matte.js` — `matte(canvas, { local })` → `Uint8ClampedArray` alpha, two engines:
+    **Best** (default when set up): the canvas (≤ 1600 px, JPEG 0.92) is POSTed to `/api/cutout`, which checks the login and
+    forwards to the shop's Cloudflare Worker (`cloudflare/cutout-worker.js`: Images binding `segment: "foreground"` = BiRefNet
+    on Cloudflare, PNG with alpha). Any failure (offline, 60 s timeout, free monthly limit 429, wrong key) → the photo is done
+    **offline** and `onCutoutNotice` listeners get a message. **Offline**: MODNet portrait matting (Apache-2.0 model from
+    `@dloizides/background-removal`, run by `onnxruntime-web` WASM) in a module worker `public/workers/matte.js` (committed, not
+    vendor); input short side 512, multiple of 32, RGB scaled to −1…1. `findViaPerson` always uses `{ local: true }`.
+    `cloudCutoutReady()` (GET `/api/cutout` → `{ enabled }`, asked once), `getCutoutMode` / `setCutoutMode` (localStorage
+    `cutout:mode`, best | offline). `components/photo/cutout-choice.jsx` = the "Background removal: Best (Cloudflare) /
+    Offline" control in Auto passport, Remove background and Joint photo; renders nothing unless the server is set up.
+  - **Best cut-out setup (free):** Cloudflare free account → Workers & Pages → Create Worker `shop-cutout` → paste
+    `cloudflare/cutout-worker.js` → Deploy; Settings → Bindings → add **Images** named `IMAGES`; Settings → Variables and
+    Secrets → Secret `SHOP_KEY` (long random text). Vercel → Settings → Environment Variables: `CUTOUT_URL` = the Worker's
+    `https://shop-cutout.<account>.workers.dev`, `CUTOUT_KEY` = same text as `SHOP_KEY` → Redeploy. Images free plan =
+    5,000 transformations / month; past that new ones fail (never billed) and the app falls back to offline. Vercel free
+    accepts bodies ≤ 4.5 MB (route limit 4 MB). Tested on 18 Nov with a stand-in Worker (not the real Cloudflare account).
   - `portrait.js` — `preparePortrait(img)`: face → level the eyes (any angle) → crop 3.6 × 4.3 forehead-to-chin heights at a fixed
     face size → matte → `refineAlpha` (levels + drop blobs not touching the nose) (input first fitted by `guidedMatte`: a colour guided filter, r ≈ 0.55% of the long side, eps 0.0005, so the blurry low-res model mask snaps to the real colour edges — smooth hair/ear/shoulder lines, no bites or specks; replaced the old colour-voting `cleanEdges` on 17 Nov after tests on raw shop photos) → crown = top of hair from the mask (clamped;
     warns when the head is cut off) → `decontaminate` (removes old background colour from hair edges) → `analyseTone` (tone.js).
@@ -174,7 +188,9 @@ npm run format                    # Prettier (printWidth 130)
     `toneTables(t)` (per-channel prep) + `toneCurvePixel(t, r, g, b, out)`; `applyTone(rgba, n, t|null)` → RGB floats.
     No face → soft grey-world (remove-bg).
   - `retouch.js` — face touch-up on RGB float arrays using `face.pts`: skin mask = face oval − eyes/brows/lips/nostrils ×
-    skin-colour likelihood (+ neck: no shape — full strength just under the jaw, fading smoothly to the sides (0.28→0.5 face widths) and down to +0.5 face heights, so the throat never gets a lighter oval; region reaches +0.62 face heights). `retouchFace(rgb, W, H, face, look)` for blemish (dark / red / odd-coloured spots →
+    skin-colour likelihood (+ upper forehead: above the mesh top, full strength fading out over the top 0.15 face heights
+    (0.3→0.45 fh above the mesh, narrowing to the temples), so no line across the forehead; the skin reference colour comes
+    from the mesh face only; region starts 0.5 fh above the mesh) (+ neck: no shape — full strength just under the jaw, fading smoothly to the sides (0.28→0.5 face widths) and down to +0.5 face heights, so the throat never gets a lighter oval; region reaches +0.62 face heights). `retouchFace(rgb, W, H, face, look)` for blemish (dark / red / odd-coloured spots →
     filled from around), smooth (guided filter, keeps texture), even (low-frequency chroma), shine, darkCircles, eyes, teeth,
     faceLight. **Never warps or reshapes** (ID-photo safe). Also `heal` (spot-fix brush, normalised-convolution fill + grain),
     `denoise`, `clarity`, `blurBehind` (background blur without person bleed), `fillOutside` (fills the empty corners of a kept
@@ -199,7 +215,10 @@ npm run format                    # Prettier (printWidth 130)
   merged;
   props `baseLook` (tool-wide touch-up level; the photo's own `look` holds only what was changed on top), `allowOwnBg`,
   `showCopies`; sliders keep a local copy and commit after 250 ms; brush maps screen → portrait with the inverse of `drawEdit`;
-  Face tab = zoomed on the face (`zoomToFace`) with the spot-fix brush and hold-to-compare; used by auto passport **and** joint
+  Face tab = opens zoomed on the face (`zoomToFace` → `BrushView focus`) with the spot-fix brush and hold-to-compare;
+  **BrushView navigation (18 Nov, Retouch + Background):** wheel zooms at the pointer (50–1000% of the frame), Space+drag /
+  right-drag / middle-drag or the Hand button moves, buttons Zoom − / + / Face / Whole photo; the view (`{ k, x, y}` on top of the
+  print Edit) never changes the print; used by auto passport **and** joint
   photo), `CardSlot` (card photo → auto corners → flatten; corner editor with 4 draggable dots; value =
   `{ image, edit, src: { photo, corners, found } }`; `cardValue(photo, corners, aspect)` builds one from outside),
   `CardPageLayout` (card-page.jsx: paper, card size 40–260 % + Real size / Fill half page / Fill page width, front & back
@@ -286,6 +305,35 @@ npm run format                    # Prettier (printWidth 130)
   - `components/tools/deed-writer.jsx` — template cards, people (each party; "আগের মানুষ থেকে পূরণ" from `deed:people`, the
     last 80 people saved when printing), details, wording/conditions editor, page settings (per template, `deed:page:<id>`),
     draft per template (`deed:draft:<id>`), Print (waits 350 ms so the last Banglish word converts).
+- **CV maker** (20 Nov, browser only, no DB) — like the shop's Word CV (A4, margins 20.3 mm top/bottom · 25.4 mm sides,
+  Poppins 10 pt, "Resume Of" + name, photo top right, gradient heading bars in Times New Roman, ❖ Label : Value rows,
+  bordered experience table, declaration + signature line):
+  - `src/lib/cv/model.js` — CV = `{ v, theme, title, name, contact[{id,text}], photo (JPEG data URL 540×680), sections[] }`.
+    Section types text · languages · experience · education · keyvalue · list · references · declaration (see file header);
+    every list is dynamic. `emptyCv()` (the shop's usual sections; Computer skills / Training / References start hidden),
+    `newSection`, `blank.*`, `themes` (6 colours), `visibleSection` (null when empty or hidden → a fresher's empty experience
+    disappears with its heading), `shownSections(cv)` (used by print and Word; signature name falls back to the name),
+    `contactLines` (drops "Email : " with no value), `isCv`, `fileName`.
+  - `src/lib/cv/html.js` — `cvBlocks(cv, fit)` → unbreakable blocks (`keep` = heading / table header stays with the next
+    block, `head` = table header repeated on a new page). Rows sit on fixed grid columns, so nothing can drift out of line.
+    `paginate(blocks, measure)`. **Always 2 pages:** `layoutCv(cv, measure, setFont, "two")` binary-searches the spacing
+    `k` (0.55–1.8; gaps × k, line heights × 1 + (k−1)·0.35) for the largest that still fits 2 pages (−0.04 room so Word
+    never spills), then only if needed the font `f` (1 → 0.88); a very short CV is split before the heading nearest the
+    middle; `tooLong` when even that is 3+ pages (UI warns). `pageStarts(pages)` = block keys that start page 2.
+    The first heading's gap is fixed 6 pt (a smaller one confuses LibreOffice's layout of the bar under the header table).
+  - `src/components/cv/cv-pages.jsx` — `CvPages({ cv, onLayout })`: measures blocks in a hidden box (cached), lays out,
+    shows scaled A4 sheets, portals a real-size copy into `#cv-print-root` (print CSS: `@page A4 margin 0`, colours exact).
+    `onLayout({ pages, fit, breaks, tooLong })`.
+  - `src/lib/cv/docx.js` — `cvToDocx(cv, { fit, breaks })` → Blob. Raw WordprocessingML zipped with fflate (no package).
+    Heading bars = inline gradient text boxes, header = borderless table with an inline photo, ❖ rows = tab stops + hanging
+    indent (long addresses wrap under the value), experience table repeats its header row and rows never split. Poppins'
+    "single" line in Word is 1.5 em, so CSS line heights ÷ 1.5. Same `fit` as the print; `w:pageBreakBefore` only on the
+    section heading that starts page 2 (inside tables/lists Word flows by itself). Checked by rendering with LibreOffice:
+    sample, fresher and a 12-job CV all 2 pages in print and Word.
+  - `components/tools/cv-maker.jsx` — saved CVs (`cv:saved`, Save / Save changes / Open / Delete / New CV), draft autosave
+    (`cv:draft`), name/title/contact lines, photo (PhotoSlot crop 27:34 → JPEG), colour, one card per section (rename,
+    show/hide, move, delete, rows add/remove/move), Add a section, sticky preview with Print + Save Word. The CV state is
+    made after mount (random row ids must not differ from the server render).
 - **Bangla numbers:** `src/lib/number-words.js` has the full irregular 0–99 list, lakh/crore, `parseAmount` accepts Bangla digits.
   `toBanglaDigits` / `fromBanglaDigits` in `src/lib/utils.js`.
 
@@ -325,6 +373,7 @@ src/
   app/
     layout.jsx  globals.css  not-found.jsx  favicon.ico
     login/page.jsx                 shop name + LoginForm
+    api/cutout/route.js            GET { enabled } · POST photo → Cloudflare Worker → PNG (login required, CUTOUT_URL/KEY)
     api/auth/[...all]/route.js     Better Auth      api/health/route.js → { ok, db }
     (app)/layout.jsx               requireUser + AppShell + ToastProvider
     (app)/page.jsx                 tool hub (search)
@@ -334,24 +383,25 @@ src/
     print/                         layout (requireUser, no shell) · receipt/[id] · payment/[id] · statement/[id] · rates
     (app)/tools/<slug>/page.jsx    one per tool: auto-passport, photo-sheet, remove-bg, joint-photo, id-card-print, page-arranger, job-photo,
                                    pdf-merge, pdf-split, pdf-organize, images-to-pdf, pdf-to-images, pdf-compress,
-                                   pdf-protect, pdf-watermark, deed-writer, bangla-typing, bijoy-unicode, image-to-text,
+                                   pdf-protect, pdf-watermark, deed-writer, cv-maker, bangla-typing, bijoy-unicode, image-to-text,
                                    image-resize, age-calculator, amount-in-words
   components/
     ui/        button, form ("use client"), misc, interactive ("use client"), file-drop ("use client"), sortable.js
     shell/     app-shell (sidebar + mobile menu), tool-hub, tool-icon, login-form
     settings/  settings-view
     photo/     crop-editor, photo-slot, sheet-panel, sheet-output, bg-picker, use-portraits.js, person-card, card-slot,
-               card-page, passport-editor, adjust-panel
+               card-page, passport-editor, adjust-panel, cutout-choice
     pdf/       pdf-bits (PdfPicker, usePdfjsDoc, useRenderDocs, PageThumb, ResultFiles, useJob)
     accounts/  bits (MoneyInput, PartyPicker, useQueryState, RangePicker, Pager, Stat), sale-form (+ partyPayload),
                expense-form, entry-table, entry-filters, void-button, party-forms (PartyFormButton, PaymentForm,
                ArchivePartyButton, PeopleFilters), price-editor (PriceEditor, AccountSettingsForm)
     print/     paper (Paper, ShopHeading, receiptSizes), print-bar, print-button
     deeds/     deed-pages (DeedPages, blockHtml, deedPapers, deedFonts, defaultPageSettings), bn-input
+    cv/        cv-pages (CvPages: measure → 2-page layout → preview + print copy)
     tools/     one client component per tool (same names as the slugs)
   lib/         tools.js (registry: groups + tools), utils.js, age.js, number-words.js, zip.js, clipboard.js, accounts.js,
                use-stored.js, photo/ (sizes, image, sheet, export, signature, card, enhance, adjust, ai/ (faces, matte, portrait, tone, retouch, look)), pdf/ (engine, ops, images, raster, stamp),
-               bangla/ (convert, avro, ocr), deeds/ (format, templates)
+               bangla/ (convert, avro, ocr), deeds/ (format, templates), cv/ (model, html, docx)
   db/          schema.js, index.js, url.js, add-user.js (`npm run user:add`)
   server/      auth.js, session.js (getCurrentUser, requireUser, requireOwner, getOwner, safeNext), errors.js,
                queries/settings.js (getShop, getTeam), actions/auth.js (signIn, signOut),
@@ -365,6 +415,7 @@ scripts/copy-vendor.mjs   copies pdf.js worker/fonts/wasm, qpdf, tesseract (work
                           onnxruntime-web (ort.wasm.min.mjs + simd-threaded .mjs/.wasm), models/modnet.onnx (+ NOTICE) and
                           @mediapipe/face_mesh into public/vendor (postinstall / predev / prebuild; `npm run vendor`). ~80 MB.
 public/workers/matte.js   background-removal worker (committed)
+cloudflare/cutout-worker.js  the Cloudflare Worker for the Best cut-out (pasted into Cloudflare's dashboard, not run by Next)
 ```
 
 To add a tool: build `components/tools/<slug>.jsx` + `app/(app)/tools/<slug>/page.jsx`, then add it to `lib/tools.js`
@@ -424,6 +475,8 @@ Schema change → edit `schema.js`, tell the owner to run `npm run db:push`, upd
 
 | Date | Change | Next |
 | --- | --- | --- |
+| 2026-11-20 | **CV maker** (সিভি / রিজিউম তৈরি, Job application group). Same look as the shop's Word CV, but every row is on fixed columns, so labels, colons and values always line up and long addresses wrap under the value. Dynamic: no experience → the section disappears; add as many jobs / exams / lines / sections as needed; rename, hide, reorder sections; 6 colours. **Always exactly 2 pages** — spacing stretches or tightens by itself (font a little smaller only if needed). Print in colour (or Save as PDF), **Save Word** (.docx, same spacing, page 2 starts at the same heading), saved CVs + autosaved draft in the browser. **New package: `@fontsource/poppins` 5.3.0.** No DB change. | More document templates, visiting cards |
+| 2026-11-18 | **Best background removal (free, Cloudflare) + editor zoom + forehead fix.** New "Background removal: Best (Cloudflare) / Offline" in Auto passport, Remove background and Joint photo: Best sends the photo to the shop's own Cloudflare Worker (BiRefNet, free 5,000 photos/month, never billed) through the new `/api/cutout` route; anything goes wrong → done offline with a notice. Owner chose this over Gemini (Gemini image editing has no free API tier). Retouch / Background brushes: scroll to zoom, Space / right-drag / Hand to move, Face / Whole photo buttons. Face touch-up no longer leaves a light line across the forehead. **Setup: Cloudflare Worker + 2 Vercel env vars (see §4).** No new packages, no DB change. | Owner sets up Cloudflare; test Best on real photos |
 | 2026-11-17 | **Tested on 112 photo variations + colour fix.** 7 real shop photos × 16 conditions (bulb / tube light / shade, dark, over-exposed, darker / fairer skin, white / clothes-coloured / busy / dark wall, bright sky, WhatsApp quality, tilted, far away), plus the real tools in the browser (Auto passport with 6 photos, presets, touch-up levels, keep background, editor tabs, PDF; Remove background; Joint photo; NID; Photo sheet) — no errors. Cut-out was steady on every background. Fixed: room-light colour casts are now removed (orange bulb, green tube light, blue shade), dark photos are lifted more, and new warnings for over-exposed or very dark photos. No new packages, no DB change. | Real shop photos under bulb light |
 | 2026-11-17 | **Fix: light oval on the throat.** The face touch-up (glow, smoothing, even colour) used a hard oval on the neck, so the throat showed a lighter round patch. The neck part now fades out smoothly to the sides and downwards. Checked on 4 new shop photos (man, boy, school girl, hijab). No new packages, no DB change. | — |
 | 2026-11-17 | **Background remover rebuilt on real photos.** The old edge cleaner (`cleanEdges`) was the cause of the bites, specks and jagged edges — removed. New `guidedMatte` fits the model's mask to the real edges of the photo (guided filter), then the usual blob removal and colour clean-up. Tested on 3 raw shop photos (office background, curly hair on sky, grey beard on green). Also used by Remove background. No new packages, no DB change. | Check more shop photos |
@@ -452,7 +505,7 @@ Schema change → edit `schema.js`, tell the owner to run `npm run db:push`, upd
 2. ✅ PDF tools (merge, split, organize, photos ↔ PDF, compress, lock/unlock, watermark, page numbers). Later: sign/stamp a PDF.
 3. ✅ Bangla typing (Banglish typing, Bijoy ↔ Unicode text + Word files, image/PDF → text).
 4. ✅ Shop accounts (sales, expenses, baki, receipts, customers/suppliers, reports, price list).
-5. **Documents & print** — 5a ✅ Deed writer with the owner's 4 templates (15 Nov). Still to come (send templates): deeds and applications (sale deed, mortgage/kot-bondhok, affidavit, applications), CV maker, visiting cards,
+5. **Documents & print** — 5a ✅ Deed writer with the owner's 4 templates (15 Nov). 5b ✅ CV maker (20 Nov). Still to come (send templates): deeds and applications (sale deed, mortgage/kot-bondhok, affidavit, applications), visiting cards,
    Halkhata cards, notices, certificates — fill-in templates with print/PDF.
 6. ✅ (mostly) **AI photo:** auto passport, background removal/colour, joint photo, card straightening — done offline in the photo
    batch. Still open: outfit/suit change, upscale (would need an AI service — owner decides).
