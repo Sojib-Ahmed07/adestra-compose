@@ -3,11 +3,21 @@
 
 import { useCallback, useDeferredValue, useEffect, useState } from "react";
 import { ChevronDown, FilePlus2, Plus, Printer, RotateCcw, Trash2, Undo2, UserRound } from "lucide-react";
-import { bn, emptyPerson, money, moneyWords } from "@/lib/deeds/format";
-import { buildDeed, deedTemplates, emptyDeed, getTemplate, resolveTexts } from "@/lib/deeds/templates";
+import { addressFields, bn, emptyPerson, money, moneyWords, normalizePerson, shortAddress } from "@/lib/deeds/format";
+import {
+    buildDeed,
+    deedTemplates,
+    emptyDeed,
+    emptyWitness,
+    getTemplate,
+    normalizeDeed,
+    resolveTexts,
+    witnessesOf,
+} from "@/lib/deeds/templates";
 import { cn } from "@/lib/utils";
 import { BanglaSwitch, BanglaTypingProvider, BnInput } from "@/components/deeds/bn-input";
 import { DeedPages, deedFonts, deedPapers, defaultPageSettings } from "@/components/deeds/deed-pages";
+import { NidReaderButton } from "@/components/deeds/nid-reader";
 import { Button } from "@/components/ui/button";
 import { Checkbox, Field, Input, Select } from "@/components/ui/form";
 import { Stepper, useToast } from "@/components/ui/interactive";
@@ -53,13 +63,9 @@ function DeedWriter() {
 
     // Load the draft and page settings of the chosen template (kept in this browser).
     useEffect(() => {
-        const base = emptyDeed(tpl, emptyPerson);
-        const saved = read(DRAFT(tpl.id), null);
-        setData(
-            saved ? { ...base, ...saved, edits: saved.edits ?? {}, extra: saved.extra ?? [], removed: saved.removed ?? [] } : base,
-        );
+        setData(normalizeDeed(tpl, read(DRAFT(tpl.id), null), emptyPerson));
         setPage({ ...defaultPageSettings, size: tpl.font, ...read(PAGE(tpl.id), {}) });
-        setPeople(read(PEOPLE, []));
+        setPeople(read(PEOPLE, []).map((x) => ({ ...x, person: normalizePerson(x.person) })));
         setLoadedFor(tpl.id);
     }, [tpl]);
     useEffect(() => {
@@ -80,8 +86,8 @@ function DeedWriter() {
 
     const rememberPeople = () => {
         const list = read(PEOPLE, []);
-        for (const p of tpl.people) {
-            const person = data[p.key];
+        const all = tpl.people.flatMap((p) => (p.multiple ? data[p.key] || [] : [data[p.key]]));
+        for (const person of all) {
             if (!person?.name?.trim()) continue;
             const id = `${person.name.trim()}|${(person.nid || "").trim()}`;
             const at = list.findIndex((x) => x.id === id);
@@ -143,16 +149,26 @@ function DeedWriter() {
                         Type Bangla with your keyboard (Avro / Bijoy), or type Banglish — “amar nam” becomes “আমার নাম” when you press space.{" "}
                         <strong>Ctrl+M</strong> switches Bangla ⇄ English. Empty boxes are left out of the deed.
                     </p>
-                    {tpl.people.map((p) => (
-                        <PersonForm
-                            key={`${tpl.id}-${p.key}`}
-                            role={p}
-                            value={data[p.key] ?? emptyPerson()}
-                            onChange={(patch) => setPerson(p.key, patch)}
-                            onReplace={(person) => setData((d) => ({ ...d, [p.key]: { ...emptyPerson(), ...person } }))}
-                            people={people}
-                        />
-                    ))}
+                    {tpl.people.map((p) =>
+                        p.multiple ? (
+                            <PersonList
+                                key={`${tpl.id}-${p.key}`}
+                                role={p}
+                                list={Array.isArray(data[p.key]) ? data[p.key] : []}
+                                onChange={(list) => set({ [p.key]: list })}
+                                people={people}
+                            />
+                        ) : (
+                            <PersonForm
+                                key={`${tpl.id}-${p.key}`}
+                                role={p}
+                                value={data[p.key] ?? emptyPerson()}
+                                onChange={(patch) => setPerson(p.key, patch)}
+                                onReplace={(person) => setData((d) => ({ ...d, [p.key]: { ...emptyPerson(), ...person } }))}
+                                people={people}
+                            />
+                        ),
+                    )}
                 </Card>
 
                 <Card className="p-5">
@@ -166,7 +182,18 @@ function DeedWriter() {
                 </Card>
 
                 <Card className="p-5">
-                    <Step n={4} title="Wording and conditions (optional)">
+                    <Step n={4} title="সাক্ষী (witnesses)">
+                        <Witnesses
+                            list={witnessesOf(data)}
+                            onChange={(witnessList) => set({ witnessList })}
+                            people={people}
+                            tplKey={tpl.id}
+                        />
+                    </Step>
+                </Card>
+
+                <Card className="p-5">
+                    <Step n={5} title="Wording and conditions (optional)">
                         <TextsEditor tpl={tpl} data={data} setData={setData} />
                     </Step>
                 </Card>
@@ -201,9 +228,129 @@ function DeedWriter() {
 
 // ——— people ———
 
-function PersonForm({ role, value, onChange, onReplace, people }) {
+/** Any number of people for one role (জামিনদার): add, remove, each with the full person form. */
+function PersonList({ role, list, onChange, people }) {
+    const n = list.length;
+    return (
+        <div className="space-y-2 rounded-lg border border-dashed border-line-strong p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-bangla text-sm font-semibold text-ink-900">
+                    {role.label} {n ? `(${bn(n)} জন)` : <span className="text-xs font-normal text-subtle">(নেই — দরকার হলে যোগ করুন)</span>}
+                </span>
+                <Button size="sm" variant="outline" onClick={() => onChange([...list, emptyPerson()])}>
+                    <Plus className="h-4 w-4" /> {role.label} যোগ করুন
+                </Button>
+            </div>
+            {list.map((person, i) => (
+                <div key={i} className="space-y-1">
+                    <PersonForm
+                        role={{ ...role, optional: false, label: n > 1 ? `${role.label}-${bn(i + 1)}` : role.label }}
+                        idPrefix={`${role.key}-${i}`}
+                        value={person ?? emptyPerson()}
+                        onChange={(patch) => onChange(list.map((x, j) => (j === i ? { ...x, ...patch } : x)))}
+                        onReplace={(p) => onChange(list.map((x, j) => (j === i ? { ...emptyPerson(), ...p } : x)))}
+                        people={people}
+                    />
+                    <button
+                        type="button"
+                        onClick={() => onChange(list.filter((_, j) => j !== i))}
+                        className="inline-flex items-center gap-1 text-xs text-muted hover:text-danger"
+                    >
+                        <Trash2 className="h-3.5 w-3.5" /> {n > 1 ? `${role.label}-${bn(i + 1)}` : role.label} বাদ দিন
+                    </button>
+                </div>
+            ))}
+        </div>
+    );
+}
+
+/** Witnesses: how many dotted lines, and (optional) each one's name and address printed under the line. */
+function Witnesses({ list, onChange, people, tplKey }) {
+    const setCount = (n) => {
+        const next = list.slice(0, n);
+        while (next.length < n) next.push(emptyWitness());
+        onChange(next);
+    };
+    const change = (i, patch) => onChange(list.map((w, j) => (j === i ? { ...w, ...patch } : w)));
+    return (
+        <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-3">
+                <span className="font-bangla text-sm text-ink-900">সাক্ষী কতজন</span>
+                <Stepper value={list.length} onChange={setCount} min={1} max={12} label="সাক্ষী কতজন" />
+            </div>
+            <p className="text-xs text-muted">
+                Leave the boxes empty for blank lines that the witnesses sign and write by hand. A name / address you type is printed
+                under that witness&apos;s line.
+            </p>
+            <div className="space-y-2">
+                {list.map((w, i) => (
+                    <div key={i} className="grid items-start gap-2 sm:grid-cols-[2rem_minmax(0,1fr)_minmax(0,1.4fr)_auto]">
+                        <span className="pt-2 font-bangla text-sm text-muted">{bn(i + 1)}।</span>
+                        <BnInput
+                            id={`${tplKey}-w${i}-name`}
+                            value={w.name ?? ""}
+                            onChange={(v) => change(i, { name: v })}
+                            aria-label={`সাক্ষী ${bn(i + 1)} — নাম`}
+                            placeholder="নাম (ঐচ্ছিক)"
+                        />
+                        <BnInput
+                            id={`${tplKey}-w${i}-addr`}
+                            value={w.address ?? ""}
+                            onChange={(v) => change(i, { address: v })}
+                            aria-label={`সাক্ষী ${bn(i + 1)} — ঠিকানা`}
+                            placeholder="ঠিকানা (ঐচ্ছিক)"
+                        />
+                        <div className="flex items-center gap-1">
+                            {people.length ? (
+                                <Select
+                                    aria-label={`সাক্ষী ${bn(i + 1)} — আগের মানুষ থেকে`}
+                                    className="h-9 w-32 text-xs"
+                                    value=""
+                                    onChange={(e) => {
+                                        const found = people.find((x) => x.id === e.target.value);
+                                        if (found) change(i, { name: found.person.name || "", address: shortAddress(found.person) });
+                                    }}
+                                >
+                                    <option value="">আগের মানুষ…</option>
+                                    {people.map((x) => (
+                                        <option key={x.id} value={x.id}>
+                                            {x.person.name}
+                                        </option>
+                                    ))}
+                                </Select>
+                            ) : null}
+                            <button
+                                type="button"
+                                aria-label={`সাক্ষী ${bn(i + 1)} বাদ দিন`}
+                                title="বাদ দিন"
+                                disabled={list.length <= 1}
+                                onClick={() => onChange(list.filter((_, j) => j !== i))}
+                                className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted hover:bg-ink-50 hover:text-danger disabled:opacity-30"
+                            >
+                                <Trash2 className="h-4 w-4" />
+                            </button>
+                        </div>
+                    </div>
+                ))}
+            </div>
+            <Button size="sm" variant="outline" onClick={() => setCount(Math.min(12, list.length + 1))} disabled={list.length >= 12}>
+                <Plus className="h-4 w-4" /> সাক্ষী যোগ করুন
+            </Button>
+        </div>
+    );
+}
+
+const ADDRESS_HINTS = {
+    house: "যেমনঃ ১২/৩ (না থাকলে খালি)",
+    village: "যেমনঃ শিবপুর",
+    post: "যেমনঃ শিবপুর - ৩৫৩০",
+    upazila: "যেমনঃ দেবিদ্বার",
+    district: "যেমনঃ কুমিল্লা",
+};
+
+function PersonForm({ role, value, onChange, onReplace, people, idPrefix }) {
     const [open, setOpen] = useState(!role.optional || Boolean(value.name));
-    const id = (k) => `${role.label}-${k}`;
+    const id = (k) => `${idPrefix || role.label}-${k}`;
     const field = (k, label, opts = {}) => (
         <Field key={k} label={label} htmlFor={id(k)} className={opts.wide ? "sm:col-span-2" : ""}>
             <BnInput
@@ -212,6 +359,7 @@ function PersonForm({ role, value, onChange, onReplace, people }) {
                 onChange={(v) => onChange({ [k]: v })}
                 english={opts.english}
                 inputMode={opts.english ? "numeric" : undefined}
+                placeholder={opts.placeholder}
             />
         </Field>
     );
@@ -225,28 +373,37 @@ function PersonForm({ role, value, onChange, onReplace, people }) {
                     {role.optional ? <span className="text-xs text-subtle">(optional)</span> : null}
                     <ChevronDown className={cn("h-4 w-4 text-muted transition-transform", open && "rotate-180")} />
                 </button>
-                {people.length ? (
-                    <Select
-                        aria-label={`Fill ${role.label} from a saved person`}
-                        className="h-8 w-56 text-xs"
-                        value=""
-                        onChange={(e) => {
-                            const found = people.find((x) => x.id === e.target.value);
-                            if (found) {
-                                onReplace(found.person);
-                                setOpen(true);
-                            }
+                <div className="flex flex-wrap items-center gap-2">
+                    <NidReaderButton
+                        role={role.label}
+                        onFill={(patch) => {
+                            onChange(patch);
+                            setOpen(true);
                         }}
-                    >
-                        <option value="">আগের মানুষ থেকে পূরণ…</option>
-                        {people.map((x) => (
-                            <option key={x.id} value={x.id}>
-                                {x.person.name}
-                                {x.person.nid ? ` — ${x.person.nid}` : ""}
-                            </option>
-                        ))}
-                    </Select>
-                ) : null}
+                    />
+                    {people.length ? (
+                        <Select
+                            aria-label={`Fill ${role.label} from a saved person`}
+                            className="h-8 w-56 text-xs"
+                            value=""
+                            onChange={(e) => {
+                                const found = people.find((x) => x.id === e.target.value);
+                                if (found) {
+                                    onReplace(found.person);
+                                    setOpen(true);
+                                }
+                            }}
+                        >
+                            <option value="">আগের মানুষ থেকে পূরণ…</option>
+                            {people.map((x) => (
+                                <option key={x.id} value={x.id}>
+                                    {x.person.name}
+                                    {x.person.nid ? ` — ${x.person.nid}` : ""}
+                                </option>
+                            ))}
+                        </Select>
+                    ) : null}
+                </div>
             </div>
             {open ? (
                 <div className="grid gap-3 border-t border-line p-3 sm:grid-cols-2">
@@ -254,11 +411,12 @@ function PersonForm({ role, value, onChange, onReplace, people }) {
                     {field("father", "পিতা")}
                     {field("mother", "মাতা")}
                     {field("husband", "স্বামী (থাকলে)")}
-                    {field("house", "বাসা/হোল্ডিং")}
-                    {field("village", "গ্রাম/রাস্তা")}
-                    {field("post", "ডাকঘর (পোস্ট কোডসহ)")}
-                    {field("upazila", "উপজেলা/থানা")}
-                    {field("district", "জেলা")}
+                    <p className="text-xs font-medium text-muted sm:col-span-2">ঠিকানা (NID কার্ডে যেমন লেখা)</p>
+                    {addressFields.map((a) =>
+                        field(a.key, a.label, {
+                            placeholder: ADDRESS_HINTS[a.key],
+                        }),
+                    )}
                     {field("profession", "পেশা")}
                     {field("nationality", "জাতীয়তা")}
                     {field("religion", "ধর্ম")}

@@ -4,20 +4,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import {
-  ChartColumn,
-  BookOpen,
-  Home,
-  ListOrdered,
-  LogOut,
-  Menu,
-  ReceiptText,
-  Settings,
-  Tags,
-  Users,
-  Wallet,
-  X,
-} from "lucide-react";
+import { Home, LogOut, Menu, Settings, X } from "lucide-react";
 import { toolGroups, tools } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import { signOut } from "@/server/actions/auth";
@@ -39,17 +26,6 @@ function NavLink({ href, active, children, onClick }) {
   );
 }
 
-/** Shop accounts menu. owner: true = only the owner sees it. */
-const accountLinks = [
-  { href: "/accounts", label: "Overview", icon: Wallet, exact: true },
-  { href: "/accounts/sale", label: "New sale", icon: ReceiptText },
-  { href: "/accounts/expense", label: "New expense", icon: BookOpen },
-  { href: "/accounts/entries", label: "Sales & expenses", icon: ListOrdered },
-  { href: "/accounts/people", label: "Customers & dues", icon: Users },
-  { href: "/accounts/reports", label: "Reports", icon: ChartColumn, owner: true },
-  { href: "/accounts/prices", label: "Price list", icon: Tags },
-];
-
 function Sidebar({ user, shopName, pathname, onNavigate }) {
   return (
     <div className="flex h-full flex-col bg-ink-950 text-white">
@@ -64,24 +40,6 @@ function Sidebar({ user, shopName, pathname, onNavigate }) {
           <NavLink href="/" active={pathname === "/"} onClick={onNavigate}>
             <Home className="h-4 w-4" /> All tools
           </NavLink>
-        </div>
-        <div>
-          <p className="px-2.5 pb-1 text-[11px] font-medium text-ink-400">Shop accounts</p>
-          <div className="space-y-0.5">
-            {accountLinks
-              .filter((l) => !l.owner || user.role === "owner")
-              .map((l) => (
-                <NavLink
-                  key={l.href}
-                  href={l.href}
-                  active={l.exact ? pathname === l.href : pathname.startsWith(l.href)}
-                  onClick={onNavigate}
-                >
-                  <l.icon className="h-4 w-4 shrink-0" />
-                  <span className="truncate">{l.label}</span>
-                </NavLink>
-              ))}
-          </div>
         </div>
         {toolGroups.map((g) => (
           <div key={g.id}>

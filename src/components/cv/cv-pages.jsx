@@ -6,20 +6,22 @@ import "@fontsource/poppins/600.css";
 import "@fontsource/poppins/700.css";
 import { useDeferredValue, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { CONTENT_W, FONT, PAGE, SIZES, layoutCv, pageStarts } from "@/lib/cv/html";
+import { CONTENT_W, FONT, PAGE, SIZES, layoutCv } from "@/lib/cv/html";
 
 const PX_PER_MM = 96 / 25.4;
 
 /**
  * The CV as real A4 pages: measured, split into pages (headings never left alone at the bottom), shown scaled to the
  * panel, and a full-size copy that only appears when printing (colours print as on screen).
- * Spacing is stretched or tightened so the CV is always exactly 2 pages (mode "two").
- * @param {{ cv: object, mode?: "two" | "auto", onLayout?: (info: { pages: number, fit: object, breaks: string[], tooLong: boolean }) => void }} props
+ * Always exactly 2 pages: each page's spacing is stretched or tightened to fill it (see layoutCv). cv.layout =
+ * { breakAt: "auto" | block key, size: "auto" | pt } — where page 2 starts and the text size, chosen in the form.
+ * @param {{ cv: object, onLayout?: (info: { pages: number, fit: object, breakKey: string | null,
+ *   choices: { key: string, label: string }[], tooLong: boolean, breakIgnored: boolean }) => void }} props
  */
-export function CvPages({ cv: liveCv, mode = "two", onLayout }) {
+export function CvPages({ cv: liveCv, onLayout }) {
     const cv = useDeferredValue(liveCv); // typing stays smooth; the layout catches up
     const measureRef = useRef(null);
-    const [layout, setLayout] = useState({ pages: [], fit: { k: 1, f: 1 } });
+    const [layout, setLayout] = useState({ pages: [], fit: { k1: 1, k2: 1, f: 1 } });
     const [fonts, setFonts] = useState(0);
 
     useEffect(() => {
@@ -52,12 +54,13 @@ export function CvPages({ cv: liveCv, mode = "two", onLayout }) {
                 cache = new Map();
             }
         };
-        const result = layoutCv(cv, measure, setFont, mode);
+        const result = layoutCv(cv, measure, setFont, cv.layout);
         el.innerHTML = "";
         setLayout(result);
-        onLayout?.({ pages: result.pages.length, fit: result.fit, breaks: pageStarts(result.pages), tooLong: result.tooLong });
+        const { pages, ...info } = result;
+        onLayout?.({ pages: pages.length, ...info });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [cv, mode, fonts]);
+    }, [cv, fonts]);
 
     const fontSize = `${(SIZES.body * layout.fit.f).toFixed(2)}pt`;
     const sheets = layout.pages.map((page, i) => (

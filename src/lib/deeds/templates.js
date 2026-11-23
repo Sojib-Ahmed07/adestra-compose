@@ -1,12 +1,27 @@
 // src/lib/deeds/templates.js
 // The shop's own deed templates (from the owner's Word files, Nov 2026). Each template says:
-//   people  — the parties (১ম পক্ষ, ২য় পক্ষ, জামিনদার …), filled with the person form
+//   people  — the parties (১ম পক্ষ, ২য় পক্ষ, জামিনদার …), filled with the person form; multiple: true = a list
+//             (any number, e.g. জামিনদার), optional: true = may be left empty
+//   witnesses — how many সাক্ষী a new deed starts with (staff can add / remove; d.witnessList)
 //   fields  — the other details (amounts, dates, vehicle …)
 //   texts   — the long paragraphs and the conditions, written from the fields; staff can change any of them
 //   blocks  — the whole deed as blocks for the page engine (components/deeds/deed-pages.jsx)
 // Wording follows the owner's files (a few obvious typing mistakes fixed). Amount words and dates are worked out.
 import { bnWords } from "@/lib/number-words";
-import { bn, bnDate, countText, endOfTerm, money, moneyWords, nameOf, personText, takaText, todayIso, two } from "./format";
+import {
+    bn,
+    bnDate,
+    countText,
+    endOfTerm,
+    money,
+    moneyWords,
+    nameOf,
+    normalizePerson,
+    personText,
+    takaText,
+    todayIso,
+    two,
+} from "./format";
 
 /**
  * Blocks (sizes are multiples of the body font size):
@@ -15,13 +30,21 @@ import { bn, bnDate, countText, endOfTerm, money, moneyWords, nameOf, personText
  *   { t: "party", text, label, labelAlign?, bold? }     a person + their role, kept together
  *   { t: "clause", n, text }                           numbered condition (hanging number)
  *   { t: "table", rows: [label, value][] }
- *   { t: "sign", title, witnesses, right: { row, label }[] }   witnesses on the left, party signatures on the right
+ *   { t: "sign", title, witnesses: { name, address }[], right: { row, label }[] }   witnesses on the left (numbered dotted
+ *                                                      lines; a name / address is printed under the line when given),
+ *                                                      party signatures on the right (rows past the witnesses are added)
  *   { t: "break" }                                     start a new stamp sheet (when "keep the template's pages" is on)
  * keep = keep with the next block. gap = space after, in lines.
  */
 
 const P = (text, o = {}) => ({ t: "p", text, ...o });
 const bismillah = (size = 1) => P("বিসমিল্লাহির রাহমানির রাহিম", { align: "center", size, bold: true, gap: 0.2 });
+
+/** "ক", "ক ও খ", "ক, খ ও গ" */
+const joinBn = (names) => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} ও ${names[names.length - 1]}`);
+
+/** The witnesses of a deed (always a list; old drafts had only a number). */
+export const witnessesOf = (d) => (Array.isArray(d.witnessList) ? d.witnessList : []);
 
 const num = (v, d = 0) => {
     const n = Number(String(v ?? "").replace(/[০-৯]/g, (c) => "০১২৩৪৫৬৭৮৯".indexOf(c)));
@@ -42,6 +65,7 @@ const officeRent = {
     title: "অফিস / দোকান ভাড়ার চুক্তিপত্র",
     hint: "মালিক ও ভাড়াটিয়া, অগ্রিম জামানত, মাসিক ভাড়া, মেয়াদ, তফসিল",
     font: 12,
+    witnesses: 5,
     people: [
         { key: "owner", label: "প্রথম পক্ষ (মালিক)" },
         { key: "tenant", label: "দ্বিতীয় পক্ষ (ভাড়াটিয়া)" },
@@ -66,7 +90,6 @@ const officeRent = {
             default: "",
             hint: "যেমনঃ গেন্ডা, এ ১৭/১, পশ্চিম-দক্ষিণ দিক থেকে ৫ নং পাকা অফিস যাহা উত্তর মুখি তিন দিকে পাকা এক দিকে সাটার বিশিষ্ট ঘর।",
         },
-        { key: "witnesses", label: "সাক্ষী কতজন", type: "number", default: "5" },
     ],
     texts(d) {
         const k = placeKinds[d.kind] ?? placeKinds["অফিস"];
@@ -157,7 +180,8 @@ const officeRent = {
             `অগ্রিম বাবদ-${money(d.advance) || "........"} (${moneyWords(d.advance) || "........"}) টাকা।`,
         ];
         if (d.business) box.push(`ব্যবসার ধরণঃ “${d.business}”`);
-        const w = Math.max(1, Math.min(9, num(d.witnesses, 5)));
+        const W = witnessesOf(d);
+        const w = W.length;
         return [
             bismillah(),
             P(`*** ${X} ভাড়ার চুক্তিপত্র দলিল ***`, { align: "center", size: 1.6, bold: true, underline: true, gap: 0.4 }),
@@ -173,10 +197,10 @@ const officeRent = {
             {
                 t: "sign",
                 title: "স্বাক্ষীগণের স্বাক্ষরঃ",
-                witnesses: w,
+                witnesses: W,
                 right: [
                     { row: 0, label: "প্রথম পক্ষের (মালিকের) স্বাক্ষর" },
-                    { row: w - 1, label: "দ্বিতীয় পক্ষের (ভাড়াটিয়ার) স্বাক্ষর" },
+                    { row: Math.max(1, w - 1), label: "দ্বিতীয় পক্ষের (ভাড়াটিয়ার) স্বাক্ষর" },
                 ],
             },
         ];
@@ -190,10 +214,11 @@ const moneyLend = {
     title: "হাওলাদনামা (টাকা ধার)",
     hint: "দাতা, গ্রহিতা, জামিনদার, টাকার পরিমাণ, মাসিক লাভ, ফেরতের সময়",
     font: 16,
+    witnesses: 3,
     people: [
         { key: "giver", label: "১ম পক্ষ (দাতা)" },
         { key: "taker", label: "২য় পক্ষ (গ্রহিতা)" },
-        { key: "guarantor", label: "জামিনদার", optional: true },
+        { key: "guarantors", label: "জামিনদার", optional: true, multiple: true },
     ],
     fields: [
         { key: "date", label: "তারিখ", type: "date", default: () => todayIso() },
@@ -206,7 +231,8 @@ const moneyLend = {
         const giver = nameOf(d.giver);
         const taker = nameOf(d.taker);
         const amt = takaText(d.amount);
-        const hasG = Boolean(d.guarantor?.name);
+        const G = guarantorsOf(d);
+        const hasG = G.length > 0;
         const list = [
             {
                 id: "intro",
@@ -216,7 +242,7 @@ const moneyLend = {
             {
                 id: "c1",
                 clause: true,
-                text: `${bnDate(d.date)} ইং তারিখে ${amt} ১ম পক্ষ ${giver} ২য় পক্ষ ${taker} কে দিবে। ১ম পক্ষ তার সম্পূর্ণ ${amt} যেকোন সময় চাইলে ২য় পক্ষ তাহা ${countText(num(d.returnDays, 30))} দিনের মধ্যে দিতে বাধ্য থাকিবে${hasG ? `, এবং উক্ত টাকা ২য় পক্ষ দিতে না পারিলে বা অস্বীকার করিলে জামিনদার (${nameOf(d.guarantor)}) দিতে বাধ্য থাকিবে` : ""}।`,
+                text: `${bnDate(d.date)} ইং তারিখে ${amt} ১ম পক্ষ ${giver} ২য় পক্ষ ${taker} কে দিবে। ১ম পক্ষ তার সম্পূর্ণ ${amt} যেকোন সময় চাইলে ২য় পক্ষ তাহা ${countText(num(d.returnDays, 30))} দিনের মধ্যে দিতে বাধ্য থাকিবে${hasG ? `, এবং উক্ত টাকা ২য় পক্ষ দিতে না পারিলে বা অস্বীকার করিলে ${G.length > 1 ? "জামিনদারগণ" : "জামিনদার"} (${joinBn(G.map(nameOf))}) দিতে বাধ্য থাকিবে` : ""}।`,
             },
         ];
         if (money(d.profit)) {
@@ -237,25 +263,30 @@ const moneyLend = {
         return list;
     },
     blocks(d, T) {
-        const hasG = Boolean(d.guarantor?.name);
+        const G = guarantorsOf(d);
+        const many = G.length > 1;
         const right = [
             { row: 0, label: "১ম পক্ষ দাতার স্বাক্ষর" },
             { row: 2, label: "২য় পক্ষ গ্রহিতার স্বাক্ষর" },
+            ...G.map((_, i) => ({ row: 4 + i * 2, label: many ? `${bn(i + 1)} নং জামিনদারের স্বাক্ষর` : "জামিনদারের স্বাক্ষর" })),
         ];
-        if (hasG) right.push({ row: 4, label: "জামিনদারের স্বাক্ষর" });
         return [
             bismillah(),
             P("“হাওলাদনামা”", { align: "center", size: 1.25, bold: true, gap: 0.6 }),
             { t: "party", text: personText(d.giver, { sep: ":", namePrefix: true }), label: "১ম পক্ষ দাতা" },
             { t: "party", text: personText(d.taker, { sep: ":", namePrefix: true }), label: "২য় পক্ষ গ্রহিতা" },
-            ...(hasG ? [{ t: "party", text: personText(d.guarantor, { sep: ":", namePrefix: true }), label: "জামিনদার" }] : []),
+            ...G.map((g, i) => ({
+                t: "party",
+                text: personText(g, { sep: ":", namePrefix: true }),
+                label: many ? `জামিনদার-${bn(i + 1)}` : "জামিনদার",
+            })),
             P(T.intro, { gap: 0.5 }),
             { t: "break" },
             P("শর্তাবলী", { align: "center", size: 1.25, bold: true, underline: true, keep: true, gap: 0.4 }),
             ...T.clauses.map((text, i) => ({ t: "clause", n: i + 1, text })),
             { t: "break" },
             P(T.closing, { gap: 1 }),
-            { t: "sign", title: "সাক্ষীগণের স্বাক্ষরঃ", witnesses: hasG ? 5 : 3, right },
+            { t: "sign", title: "সাক্ষীগণের স্বাক্ষরঃ", witnesses: witnessesOf(d), right },
         ];
     },
 };
@@ -267,6 +298,7 @@ const vehicleSale = {
     title: "পুরাতন অটো-রিক্সা / গাড়ী বিক্রয় চুক্তিপত্র",
     hint: "বিক্রেতা, ক্রেতা, গাড়ীর বিবরণ, মূল্য, মালিকানা হস্তান্তরের তারিখ (৩ ফর্দ)",
     font: 16,
+    witnesses: 3,
     people: [
         { key: "seller", label: "প্রথম পক্ষ (বিক্রেতা)" },
         { key: "buyer", label: "দ্বিতীয় পক্ষ (ক্রেতা)" },
@@ -279,7 +311,6 @@ const vehicleSale = {
         { key: "extra", label: "অন্যান্য বিবরণ (চেসিস / রেজি. নং ইত্যাদি)", type: "text", default: "" },
         { key: "price", label: "বিক্রয় মূল্য (টাকা)", type: "money", default: "" },
         { key: "date", label: "মালিকানা হস্তান্তরের তারিখ", type: "date", default: () => todayIso() },
-        { key: "witnesses", label: "সাক্ষী কতজন", type: "number", default: "3" },
     ],
     texts(d) {
         const V = d.vehicle || "অটো-রিক্সা";
@@ -329,7 +360,8 @@ const vehicleSale = {
         if (d.colour) rows.push(["গাড়ীর রং:", d.colour]);
         if (d.battery) rows.push(["ব্যাটারী:", d.battery]);
         if (d.extra) rows.push(["অন্যান্য:", bn(d.extra)]);
-        const w = Math.max(1, Math.min(9, num(d.witnesses, 3)));
+        const W = witnessesOf(d);
+        const w = W.length;
         return [
             bismillah(),
             P(`*** পুরাতন ${V} বিক্রয় চুক্তিপত্র দলিল ***`, { align: "center", size: 1.15, bold: true, underline: true, gap: 0.5 }),
@@ -346,10 +378,10 @@ const vehicleSale = {
             {
                 t: "sign",
                 title: "স্বাক্ষীগণের স্বাক্ষরঃ",
-                witnesses: w,
+                witnesses: W,
                 right: [
                     { row: 0, label: "প্রথম পক্ষের স্বাক্ষর (বিক্রেতা)" },
-                    { row: w - 1, label: "দ্বিতীয় পক্ষের স্বাক্ষর (ক্রেতা)" },
+                    { row: Math.max(1, w - 1), label: "দ্বিতীয় পক্ষের স্বাক্ষর (ক্রেতা)" },
                 ],
             },
             P(`অত্র চুক্তিপত্র দলিল ${bn(ctx.pages)} (${bnWords(ctx.pages)}) ফর্দে টাইপকৃত এবং স্বাক্ষী ${countText(w)} জন রহিল।`, {
@@ -367,6 +399,7 @@ const vehicleSaleShort = {
     title: "অটো রিকশা ক্রয়-বিক্রয় চুক্তিনামা (১ পাতা)",
     hint: "ছোট চুক্তিনামা — বিক্রেতা, ক্রেতা, মূল্য, রং, ব্যাটারী",
     font: 12,
+    witnesses: 3,
     people: [
         { key: "seller", label: "১ম পক্ষ (বিক্রেতা)" },
         { key: "buyer", label: "২য় পক্ষ (ক্রেতা)" },
@@ -415,7 +448,7 @@ const vehicleSaleShort = {
             {
                 t: "sign",
                 title: "সাক্ষীগণের স্বাক্ষরঃ",
-                witnesses: 3,
+                witnesses: witnessesOf(d),
                 right: [
                     { row: 0, label: "১ম পক্ষের স্বাক্ষর" },
                     { row: 2, label: "২য় পক্ষের স্বাক্ষর" },
@@ -431,9 +464,40 @@ export const getTemplate = (id) => deedTemplates.find((t) => t.id === id);
 /** A fresh form for a template. */
 export function emptyDeed(tpl, emptyPerson) {
     const d = { edits: {}, extra: [], removed: [] };
-    for (const p of tpl.people) d[p.key] = emptyPerson();
+    for (const p of tpl.people) d[p.key] = p.multiple ? [] : emptyPerson();
     for (const f of tpl.fields) d[f.key] = typeof f.default === "function" ? f.default() : (f.default ?? "");
+    d.witnessList = Array.from({ length: tpl.witnesses ?? 3 }, () => emptyWitness());
     return d;
+}
+
+export const emptyWitness = () => ({ name: "", address: "" });
+
+/**
+ * A saved draft made to fit the current template (drafts saved before 20 Nov had one `guarantor` and a witness number).
+ */
+export function normalizeDeed(tpl, saved, emptyPerson) {
+    const base = emptyDeed(tpl, emptyPerson);
+    if (!saved || typeof saved !== "object") return base;
+    const d = { ...base, ...saved, edits: saved.edits ?? {}, extra: saved.extra ?? [], removed: saved.removed ?? [] };
+    for (const p of tpl.people) {
+        if (!p.multiple) continue;
+        if (!Array.isArray(d[p.key])) d[p.key] = [];
+        if (p.key === "guarantors" && saved.guarantor?.name?.trim() && !Array.isArray(saved.guarantors)) d[p.key] = [saved.guarantor];
+    }
+    delete d.guarantor;
+    // people from 20–23 Nov 2026 drafts have a one-line address — it is split back into the 5 parts
+    for (const p of tpl.people) d[p.key] = p.multiple ? (d[p.key] || []).map(normalizePerson) : normalizePerson(d[p.key]);
+    if (!Array.isArray(saved.witnessList)) {
+        const n = Math.max(1, Math.min(12, num(saved.witnesses, tpl.witnesses ?? 3)));
+        d.witnessList = Array.from({ length: n }, () => emptyWitness());
+    }
+    delete d.witnesses;
+    return d;
+}
+
+/** Guarantors with a name (the empty boxes are not printed). */
+function guarantorsOf(d) {
+    return (Array.isArray(d.guarantors) ? d.guarantors : []).filter((g) => g?.name?.trim());
 }
 
 /**

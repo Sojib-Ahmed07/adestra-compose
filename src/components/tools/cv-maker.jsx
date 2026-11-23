@@ -5,6 +5,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Eye, EyeOff, FileDown, FilePlus2, FolderOpen, Plus, Printer, Save, Trash2, X } from "lucide-react";
 import { blank, educationLabels, emptyCv, fileName, isCv, newSection, sectionTypes, themes, uid } from "@/lib/cv/model";
 import { cvToDocx } from "@/lib/cv/docx";
+import { TEXT_SIZES } from "@/lib/cv/html";
 import { defaultEdit, loadImage, renderEdit } from "@/lib/photo/image";
 import { downloadBlob } from "@/lib/photo/export";
 import { cn } from "@/lib/utils";
@@ -42,7 +43,14 @@ export function CvMakerTool() {
     const [loaded, setLoaded] = useState(false);
     const [photoKey, setPhotoKey] = useState(0); // a new / opened CV starts with a fresh photo box
     const [saved, setSaved] = useState([]);
-    const [layout, setLayout] = useState({ pages: 0, fit: { k: 1, f: 1 }, breaks: [], tooLong: false });
+    const [layout, setLayout] = useState({
+        pages: 0,
+        fit: { k1: 1, k2: 1, f: 1 },
+        breakKey: null,
+        choices: [],
+        tooLong: false,
+        breakIgnored: false,
+    });
 
     // The CV being typed is kept in this browser, so a refresh or a closed tab loses nothing.
     useEffect(() => {
@@ -59,6 +67,9 @@ export function CvMakerTool() {
     if (!cv) return <Card className="p-5 text-sm text-muted">Loading…</Card>;
 
     const set = (patch) => setCv((c) => ({ ...c, ...patch }));
+    const setLayoutChoice = (patch) => setCv((c) => ({ ...c, layout: { breakAt: "auto", size: "auto", ...c.layout, ...patch } }));
+    const breakAt = cv.layout?.breakAt || "auto";
+    const textSize = cv.layout?.size || "auto";
     const setSection = (id, patch) =>
         setCv((c) => ({ ...c, sections: c.sections.map((s) => (s.id === id ? { ...s, ...patch } : s)) }));
     const moveSection = (i, d) =>
@@ -111,7 +122,7 @@ export function CvMakerTool() {
     };
     const saveWord = () => {
         try {
-            downloadBlob(cvToDocx(cv, { fit: layout.fit, breaks: layout.breaks }), `${fileName(cv)}.docx`);
+            downloadBlob(cvToDocx(cv, { fit: layout.fit, breakKey: layout.breakKey }), `${fileName(cv)}.docx`);
         } catch (err) {
             toast(`Could not make the Word file: ${err.message}`, "error");
         }
@@ -238,7 +249,7 @@ export function CvMakerTool() {
                     <div className="flex flex-wrap items-center justify-between gap-2">
                         <p className="text-sm text-muted">
                             <strong className="text-ink-900">{layout.pages}</strong> {layout.pages === 1 ? "page" : "pages"} · A4
-                            {layout.fit.f < 1 ? " · text made a little smaller to fit" : ""}
+                            {textSize === "auto" && layout.fit.f !== 1 ? ` · text ${(10 * layout.fit.f).toFixed(1)} pt to fit` : ""}
                         </p>
                         <div className="flex flex-wrap gap-2">
                             <Button variant="ghost" onClick={saveWord}>
@@ -255,9 +266,41 @@ export function CvMakerTool() {
                             {layout.pages} pages.
                         </p>
                     ) : null}
+                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_130px]">
+                        <Field label="Page 2 starts at" htmlFor="cv-break">
+                            <Select id="cv-break" value={breakAt} onChange={(e) => setLayoutChoice({ breakAt: e.target.value })}>
+                                <option value="auto">Auto — both pages filled evenly</option>
+                                {breakAt !== "auto" && !layout.choices.some((c) => c.key === breakAt) ? (
+                                    <option value={breakAt}>(your choice — does not fit now)</option>
+                                ) : null}
+                                {layout.choices.map((c) => (
+                                    <option key={c.key} value={c.key}>
+                                        {c.label}
+                                    </option>
+                                ))}
+                            </Select>
+                        </Field>
+                        <Field label="Text size" htmlFor="cv-size">
+                            <Select id="cv-size" value={String(textSize)} onChange={(e) => setLayoutChoice({ size: e.target.value })}>
+                                <option value="auto">Auto</option>
+                                {TEXT_SIZES.map((v) => (
+                                    <option key={v} value={String(v)}>
+                                        {v} pt
+                                    </option>
+                                ))}
+                            </Select>
+                        </Field>
+                    </div>
+                    {layout.breakIgnored ? (
+                        <p className="rounded-lg bg-warn-50 px-3 py-2 text-xs text-warn">
+                            Page 2 can&apos;t start where you chose — page 1 or 2 would overflow. Auto is used; pick another place or a smaller
+                            text size.
+                        </p>
+                    ) : null}
                     <CvPages cv={cv} onLayout={setLayout} />
                     <p className="text-xs text-muted">
-                        The CV is always set on 2 pages: the spacing grows or shrinks by itself. In the print dialog choose{" "}
+                        The CV is always set on 2 pages: each page&apos;s spacing grows or shrinks by itself so page 1 has no empty space at
+                        the bottom. Move a section to the other page with <strong>Page 2 starts at</strong>. In the print dialog choose{" "}
                         <strong>A4</strong>, <strong>Margins: None</strong>, <strong>Scale 100%</strong> and tick{" "}
                         <strong>Background graphics</strong> for the coloured bars. To send a PDF, choose “Save as PDF”.{" "}
                         <strong>Save Word</strong> gives a .docx the customer can edit — every row is already lined up.

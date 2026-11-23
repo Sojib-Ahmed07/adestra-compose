@@ -7,7 +7,7 @@
 > create or change, list any `npm install` / `db:push` / env changes, and ask for the current contents of any file you need
 > to edit that you haven't been shown. **Never guess what an existing file contains.**
 
-Last updated: **20 Nov 2026** — CV maker (always 2 pages, colour print, Save Word, saved CVs).
+Last updated: **23 Nov 2026 (2)** — NID reader tested on the owner's real cards; scans / PDF pages with both sides. Earlier today: Tools trimmed (PDF, Bangla typing, calculators, image resize, page arranger, job photo and shop accounts removed); address back to 5 boxes; NID address checked against Bangladesh's places list; order presets in Passport photo sheet.
 
 ---
 
@@ -20,8 +20,8 @@ Last updated: **20 Nov 2026** — CV maker (always 2 pages, colour print, Save W
 | Money | **No payments, no credits.** Every tool is free to use for the shop's staff. |
 | Inspiration | Feature set of sohozkaj.com and alltoolsbd.netlify.app (see §10). Build our own versions — never copy their text, template artwork or branding. |
 | Language | **JavaScript only** (`.js` / `.jsx`). No TypeScript files, no type annotations (JSDoc is fine). |
-| Stack | Next.js **16.4.6 (pinned)** (App Router, Turbopack) · React **19.3** · Tailwind CSS **4.3.4 (pinned, via `@tailwindcss/postcss`)** · lucide-react · zod **v4** · Better Auth **1.7** · Drizzle ORM + `pg` · Neon Postgres · pdf-lib · pdfjs-dist **6** · qpdf (WASM, `@neslinesli93/qpdf-wasm`) · fflate (ZIP, also builds the CV .docx) · @fontsource/poppins **5.3.0** (CV font) · bijoy-unicode-converter + bijoy2unicode · avro-phonetic · tesseract.js **7** · onnxruntime-web (WASM) + MODNet model · MediaPipe Face Mesh (legacy) |
-| Privacy | Customer photos and documents are processed in the browser with `<canvas>`. **One exception (owner's decision, 18 Nov 2026):** the optional "Best" background removal sends the photo to the shop's own Cloudflare Worker (see §4 "Best cut-out"); "Offline" sends nothing. The database holds logins, settings and the shop accounts (sales, expenses, customers, payments). |
+| Stack | Next.js **16.4.6 (pinned)** (App Router, Turbopack) · React **19.3** · Tailwind CSS **4.3.4 (pinned, via `@tailwindcss/postcss`)** · lucide-react · zod **v4** · Better Auth **1.7** · Drizzle ORM + `pg` · Neon Postgres · pdf-lib (sheet PDFs) · fflate (ZIP, also builds the CV .docx) · @fontsource/poppins **5.3.0** (CV font) · avro-phonetic · tesseract.js **7** (NID reader) · onnxruntime-web (WASM) + MODNet model · MediaPipe Face Mesh (legacy) |
+| Privacy | Customer photos and documents are processed in the browser with `<canvas>`. **One exception (owner's decision, 18 Nov 2026):** the optional "Best" background removal sends the photo to the shop's own Cloudflare Worker (see §4 "Best cut-out"); "Offline" sends nothing. The database holds logins and settings. (The shop-accounts tables are still in the schema but nothing uses them since 23 Nov — kept so no data is lost.) |
 | UI language | English labels with Bangla tool names/subtitles. Bangla text uses Noto Sans Bengali. |
 | Owner's machine | Windows, PowerShell. Node 20.9+. See §4 "Native files on Windows". |
 
@@ -82,7 +82,7 @@ npm run format                    # Prettier (printWidth 130)
   files ("An Application Control policy has blocked this file" → "Turbopack is not supported… only WASM bindings"). The owner
   turned Smart App Control off on 10 Nov 2026. `next` 16.4.6 (owner upgraded from 16.4.4) and `tailwindcss` / `@tailwindcss/postcss` 4.3.4 are pinned to
   exact versions; keep them pinned and don't run `npm update`. When adding packages, prefer pure JavaScript / WebAssembly ones —
-  every Batch 2–3 package is (pdf.js, qpdf, tesseract.js, converters).
+  tesseract.js and avro-phonetic are.
 - **Next 16.4:** `params` / `searchParams` are Promises (`const { x } = await searchParams`). Read `node_modules/next/dist/docs/`
   when unsure — this version differs from older training data (see `AGENTS.md`).
 - **`cacheComponents` is OFF** in `next.config.mjs` (logged-in app; every page is per-request). Don't turn it on without
@@ -227,65 +227,26 @@ npm run format                    # Prettier (printWidth 130)
   arrow keys**; prints through `SheetOutput hidePreview`). `usePortraits` also has `lookToAll(part)`.
   Build `items` with `useMemo` so previews only redraw on real changes.
 - **`useStoredState(key, initial, check)`** (`src/lib/use-stored.js`) — useState remembered in localStorage (tool settings).
-- **PDF engine** (`src/lib/pdf/`, browser only):
-  - Files served from `public/vendor/` are **copied from node_modules by `scripts/copy-vendor.mjs`** (runs on `postinstall`,
-    `predev`, `prebuild`; `npm run vendor` by hand). `public/vendor/` is git-ignored. If PDF pages don't show or lock/unlock
-    fails to load, run `npm run vendor`.
-  - `engine.js` — `getPdfjs()` (lazy `import("pdfjs-dist")`, worker at `/vendor/pdfjs/pdf.worker.min.mjs`), `openForRender(bytes)`,
-    `renderPage(doc, n, { scale | maxWidth, rotation })` (pdf.js v6: `page.render({ canvas, viewport })`), `closeDoc(doc)`
-    (**v6 has no `doc.destroy()` — use `doc.loadingTask.destroy()` via `closeDoc`**), `runQpdf(bytes, (in, out) => args)`.
-    qpdf loads `/vendor/qpdf/qpdf.js` as a script (global `Module` → `window.__qpdfCreate`), a fresh instance per run. This build
-    prints to `console.log/error` directly, so `runQpdf` captures the console while it runs; messages are in `err.qpdf`.
-  - `ops.js` (pdf-lib) — `readPdfFile(file)` → `{ name, size, bytes, pageCount, encrypted }`, `assemblePages([{ bytes, pageIndex, rotate }])`
-    (merge/split/organize all use this), `resave`, `parseRanges("1-3, 5, 8-", count)` (Bangla digits ok), `imagesToPdf`,
-    `overlayPages(bytes, layersFor)` (draws PNG layers; handles page rotation and crop-box offsets), `pdfBlob`, `suffixName`.
-  - `images.js` — `prepareImage(file, "high"|"normal"|"small", { grey })` (EXIF-correct, size-capped). `raster.js` —
-    `rasterizePdf(bytes, { dpi, quality, grey })` (compress = pages become JPEGs). `stamp.js` — watermark / page-number layers
-    drawn on canvas so **Bangla text shapes correctly** (pdf-lib can't shape Bangla), `stampPdf`, `drawPreview`.
-  - pdf-lib refuses encrypted PDFs; `PdfPicker` rejects them with "Unlock it first" unless `allowEncrypted`.
-- **Bangla engine** (`src/lib/bangla/`, browser only):
-  - `convert.js` — `bijoyToUnicode` / `unicodeToBijoy` use **bijoy-unicode-converter** (`ConvertToUnicode("bijoy", line)`,
-    `ConvertToASCII("bijoy", line)`; tested round-trip on 42 hard conjunct words). `bijoy2unicode` is used **only** for files
-    (`convertBijoyFile` → `bijoy2unicode/docx` `convertFile`: .docx/.odt/.rtf/.txt/.html; swaps SutonnyMJ → a Unicode font,
-    keeps English runs). Its text engine gets ব্র্যাক / ঊর্ধ্ব wrong, so don't use it for typed text. `detectEncoding`, `textStats`.
-    Bijoy digits become Bangla digits (correct — SutonnyMJ draws 0–9 as Bangla digits).
-  - `avro.js` — `loadAvro()` loads the **unmodified** jsAvroPhonetic file (MPL-1.1) from `/vendor/avro/avro-lib.js` as a script
-    (global `OmicronLab.Avro.Phonetic.parse`). `avroGuide` / `avroKeys` examples were each checked against the engine — re-check
-    any new example (e.g. `kormo` → করম, `korrmo` → কর্ম).
-  - `ocr.js` — tesseract.js 7, one cached worker per language set (`ben+eng`, `ben`, `eng`), LSTM only, files from
-    `/vendor/tesseract` (`workerBlobURL: false`, absolute URLs, language data `4.0.0_best_int`, cached in IndexedDB after first
-    use). `enhanceForOcr` = grey + contrast + upscale small images. Tesseract prints two harmless "Parameter not found" warnings.
-  - `src/lib/clipboard.js` — `copyText(text)` → true/false (with a fallback for old browsers).
-- **PDF components** (`src/components/pdf/pdf-bits.jsx`): `PdfPicker`, `usePdfjsDoc(bytes)`, `useRenderDocs()` (several docs),
-  `PageThumb` (lazy, cached, CSS rotation), `ResultFiles` (download each + "Download all (ZIP)"), `useJob()` (busy + error toast).
-  `components/ui/sortable.js`: `useDragSort(list, setList)` + `moveItem` — always pair drag with arrow buttons (touch screens).
+- **Bangla typing engine** (`src/lib/bangla/avro.js`, browser only): `loadAvro()` loads the **unmodified** jsAvroPhonetic
+  file (MPL-1.1) from `/vendor/avro/avro-lib.js` as a script (global `OmicronLab.Avro.Phonetic.parse`). Used by the deed
+  writer's `BnInput`. (The Bijoy ↔ Unicode converter and the OCR tool were removed on 23 Nov; the NID reader has its own
+  tesseract workers in `lib/deeds/nid.js`.)
 - **Printing exact sizes:** the print dialog must be "Actual size / 100%", margins "None". The UI says this under the buttons.
-- **Dates** in the age calculator are `"YYYY-MM-DD"` strings handled in UTC (`src/lib/age.js`). Don't use `new Date("2026-11-09")`
-  math in local time. Today's date is set after mount (avoids server/client time-zone mismatch).
-- **Accounts** (Batch 4):
-  - `src/lib/accounts.js` (client + server): `taka(n)` (৳ with lakh grouping), `parseMoney` (Bangla digits, commas, ৳; NaN when
-    invalid or negative), `round2`, `todayDhaka()` / `dhakaDateOf()` / `addDays` / `formatDay` / `formatTime` (all **Asia/Dhaka**),
-    `rangeFor(preset)`, `resolveRange(searchParams, fallback)` (URL `?range=today|yesterday|week|month|lastMonth|year|custom&from&to`),
-    `payMethods`, `defaultExpenseTypes`, `entryDue(e)`.
-  - Money columns are `numeric(12,2)` → strings from pg; queries convert with `Number()` + `round2`.
-  - **Balances are never stored** — always computed in SQL (`receivableSql` / `payableSql` in `server/queries/accounts.js`).
-  - **Nothing is deleted or edited**: entries and payments are cancelled (`voidedAt`, `voidedBy`, `voidReason`) and every total
-    filters `voided_at is null`. Owner can cancel anything; operators only their own, on the same Dhaka day (`canVoid`).
-  - Filters live in the URL (`useQueryState`, `RangePicker`, `Pager` in `components/accounts/bits.jsx`).
-  - "Save & print" opens the tab **during the click** (`window.open("about:blank")`) and sets its URL after saving — browsers
-    block pop-ups opened after an `await`.
-  - Print pages are in `src/app/print/**` (outside the app shell, `requireUser` in `print/layout.jsx`), sized with `<Paper size>`
-    (`58` / `80` mm rolls, `a5`, `a4`; `@page` set per page) and a `PrintBar` (`?size=`, `?auto=1` opens the print dialog).
-  - CSV: `csvResponse()` in `src/server/csv.js` (UTF-8 BOM for Excel + Bangla, formula-injection safe).
-  - Tests: the sidebar has a **Sign out `<form>`** — in browser tests target `main form button[type=submit]`, not `form button`.
+- **Dates** are `"YYYY-MM-DD"` strings handled in UTC (deeds: `format.js`). Don't use `new Date("2026-11-09")` math in local
+  time. Today's date is set after mount (avoids server/client time-zone mismatch).
 - **Deeds** (Batch 5a, browser only, no DB):
   - `src/lib/deeds/format.js` — `bn` (Bangla digits), `money` ("৫০,০০০/-"), `moneyWords` ("পঞ্চাশ হাজার"), `takaText`,
     `two` ("০৫"), `countText` ("০৩ (তিন)"), `bnDate("YYYY-MM-DD")` → "০১/১০/২০২৬", `endOfTerm(start, years)` (start + years − 1
     day), `todayIso()` (Dhaka), `personFields`, `emptyPerson()` (বাংলাদেশী / ইসলাম), `personText(p, { sep, namePrefix })`
     writes one party like the owner's deeds and leaves out empty parts.
   - `src/lib/deeds/templates.js` — the owner's 4 templates as data: office-rent (অফিস/দোকান ভাড়া), money-lend (হাওলাদনামা,
-    optional জামিনদার), vehicle-sale (পুরাতন অটো-রিক্সা বিক্রয়, ৩ ফর্দ, "N (words) ফর্দে" counts the real sheets),
-    vehicle-sale-1 (১ পাতা). Each = `{ id, title, hint, font, people[], fields[], texts(d), blocks(d, T, ctx) }`.
+    any number of জামিনদার — people entry `multiple: true` → `d.guarantors[]`), vehicle-sale (পুরাতন অটো-রিক্সা বিক্রয়, ৩ ফর্দ, "N (words) ফর্দে" counts the real sheets),
+    vehicle-sale-1 (১ পাতা). Each = `{ id, title, hint, font, witnesses (default count), people[], fields[], texts(d),
+    blocks(d, T, ctx) }`. people: `optional`, `multiple` (a list, form = `PersonList`). **Witnesses** on every template:
+    `d.witnessList = [{ name, address }]` (count = length, 1–12; empty = blank dotted line; name/address printed under the
+    line); `witnessesOf(d)`, `emptyWitness`. `normalizeDeed(tpl, saved, emptyPerson)` loads a draft and converts drafts from
+    before 20 Nov (`guarantor` → `guarantors[]`, `witnesses` number → `witnessList`). The sign block draws
+    max(witnesses, last party-signature row + 1) rows, so extra জামিনদার signatures get their own rows.
     `texts` = editable paragraphs (`clause: true` = numbered condition). The form keeps `d.edits[id]` (staff's own wording
     wins), `d.removed[]`, `d.extra[]` (added conditions). `resolveTexts`, `buildDeed(tpl, d, { pages })`, `emptyDeed`.
     Block types: p, box, party, clause, table, sign, break (see file header). Wording = owner's files, obvious typos fixed.
@@ -299,41 +260,138 @@ npm run format                    # Prettier (printWidth 130)
     Layout is skipped while the measure box is hidden (printing), so the print copy never collapses to one sheet.
     Papers: legal (stamp, 215.9 × 355.6) and A4. Fonts: Kalpurush / Nikosh / SolaimanLipi if installed on the PC, else Noto
     Sans Bengali (bundled).
+  - **NID → person (20 Nov):** `src/lib/deeds/nid.js` (browser) `readNid(files, onProgress)` → `{ fields, found, texts }`:
+    per photo `findCardCorners` (ratio 1.25–2 = one card → corners pushed out 5% → `warpQuad` 2000 px) else `contentCrop`
+    (the printed part of a page: photocopy with front above back, scans) → which way up (quick English read, psm 11, at
+    0°/180° for a found card, all 4 turns otherwise; score = card words + confidence; no card shape found → the photo is cut
+    to the area of the confident English words + 25–35% room, so a small card in a big photo is enlarged) → Bangla+English
+    read (grey, 1% levels, psm 3 with TSV line boxes; psm 11 again if almost nothing) → **every line read again on its own,
+    enlarged to ~90 px tall (psm 7, worker ben-eng-line)** — the main fix for small Bangla letters on the card pattern →
+    smart card back: the address block (30% of the card above the "Blood Group / Place of Birth" line, left 75%) read again
+    from the colour photo, grey and red channel, enlarged + sharpened → a Sauvola black-and-white copy (psm 6) → if the
+    text has `<<<`/BGD, the machine lines are read with an A-Z0-9< whitelist. Readings go to `mergeNid` best-first
+    (lines, address block, page, black-and-white). Own tesseract workers (keys
+    eng-fast, ben-eng, mrz) from `/vendor/tesseract`; `stopNidReader()` when the box closes. Nothing is uploaded.
+    **(23 Nov)** the address block is now read on both card types (old card: from the ঠিকানা line down to the next
+    printed line; smart card: above Blood Group) in 6 versions (2 sizes × grey / red, plus `flatten` = light evened out
+    and its black-and-white copy) and every version goes to `mergeAddress` as a vote (`mergeNid(list, extraAddress)`).
+    `parseNid` now returns `addressRaw` (the address lines as read); the old `fullAddress` / `parseAddress` /
+    `addressScore` / district list in nid-parse.js were removed. Fields filled: name, father, mother, husband, house,
+    village, post, upazila, district, nid; `addressLine` is shown in the box for checking.
+    `src/lib/deeds/nid-parse.js` (pure, Node-testable): `parseNid(text, mrz)` — front: labels (নাম/পিতা/মাতা/স্বামী, misread
+    forms too; smart card = label line then value line) plus position around the English name line; DOB; NID after
+    "NID No"/"ID NO", else a 10/13/17-digit run (best on the line after the DOB; noise / leading-0 runs dropped). Back:
+    ঠিকানা … up to Blood/রক্তের/জন্মস্থান → `addressRaw` (23 Nov; split and checked by nid-address.js, see below).
+    **(20 Nov, later):** lines with Bangla (not the English label lines) are read again by a Bangla-only worker
+    (`ben-line`, psm 7) and the address block by `ben-block` (psm 6; full width on old cards, 75% on smart cards) — the
+    mixed reader turned small Bangla words into English letters. `jumbled(word)` drops consonant jumbles (≥ 4 consonants
+    with almost no vowel signs, 3+ hasants, ৎ inside a word, a letter 3× in a row); stray bits at the end are dropped one
+    after another; a label read without ":" gets it back; word-final ্ + ZWNJ removed (আবদুল্লাহ্‌ → আবদুল্লাহ).
+    `fixName` drops a short stray word after the usual last word (… মিয়া সত); `mergeNid` completes a name read without its
+    last word from another reading; the machine-line date of birth (`dobChecked`) wins over the printed date as read. `parseMrz`: I<BGD 9 digits + rest + ICAO check digit → NID (trusted), line 2 → DOB.
+    **Spelling checks (20 Nov):** `wellFormed(word)` drops impossible Bangla words (sign first, ্ not between consonants,
+    two vowel signs); `fixDistrict` matches the district to the 64 real ones (1–2 letters off → corrected, no match →
+    left empty, never a wrong district); `fixName` drops impossible words and corrects common name words (মোঃ, বেগম,
+    খাতুন, মিয়া, উদ্দিন… — only a swapped letter, or a last word up to 2 off one of the usual endings; never adds/removes a
+    letter, so আবুল stays আবুল); address parts: digits only in বাসা and the post code; a post code found without its
+    ডাকঘর label keeps only the code. Rule: an empty box is better than wrong information.
+    `mergeNid` (several readings, best first): address = `mergeAddress` of all readings; names = the first believable value
+    (`plausible`: Bangla only, 1–6 words), a later reading only replaces junk; NID by source (MRZ >
+    labelled > run). `components/deeds/nid-reader.jsx` — `NidReaderButton` on every person (PersonForm header): up to 3
+    photos → progress → card pictures as read + every field editable with a tick box (English name, DOB, blood shown for
+    checking) → "Fill these into …" patches the person. Tested on 17 shop photos + 3 made-up photocopy pages: clear
+    photos / photocopies read name, parents, NID and most of the address; washed-out pink / small blurry photos read little
+    (UI says so).
   - `src/components/deeds/bn-input.jsx` — `BanglaTypingProvider`, `BnInput` (Avro Banglish on space / Enter / leaving the
     box; Bangla from a keyboard layout passes through; Ctrl+M on/off, remembered as `deed:banglish`; short forms md → মোঃ,
     mst → মোছাঃ, mosa → মোসাঃ, dr → ডাঃ), `BanglaSwitch`.
-  - `components/tools/deed-writer.jsx` — template cards, people (each party; "আগের মানুষ থেকে পূরণ" from `deed:people`, the
-    last 80 people saved when printing), details, wording/conditions editor, page settings (per template, `deed:page:<id>`),
+  - **Address = 5 boxes again (23 Nov)**: `addressFields` in `format.js` = house (বাসা/হোল্ডিং), village (গ্রাম/রাস্তা),
+    post (ডাকঘর, written "name - ৩৫৩০"), upazila (থানা/উপজেলা, printed "থানা"), district (জেলা). `personText` prints them with
+    labels (`joinAddress(p, sep)`); `shortAddress` for witness lines. People / drafts from 20–23 Nov with a one-line
+    `address` are split back by `normalizePerson` → `splitAddress(line)` (labels, then the card's unlabelled
+    "…, upazila, district" after the post office; leftovers go to গ্রাম/রাস্তা — nothing lost).
+  - **NID address check (23 Nov)** — `src/lib/deeds/nid-address.js` (pure, Node-testable) + `bd-places.js` (GENERATED,
+    ~155 KB, only loaded with the NID reader): 64 districts, 573 upazilas / city thanas (nuhil/bangladesh-geocode, MIT, +
+    Dhaka / Chattogram / Khulna / Rajshahi city thanas by hand) with their unions, 1,349 post codes → district + thana.
+    `splitReading(raw)`: text → tokens; labels found even when misread (`labelOf`: fuzzy, also glued to the value —
+    "গ্রাম/রাস্তামধ্যপাড়া"); words before a ":" that are not a known label = misread label (dropped); the card's other
+    printed lines (কার্ডটি … সম্পত্তি …) dropped; post office = ডাকঘর part or the first part with a 4-digit code.
+    `readAddress(raw)`: district = text 1–2 letters off a real one (ties = unsure = empty), else the post code's district;
+    a code from another district = misread → the one code of this district a digit away, else dropped; upazila matched
+    inside that district (small list, more slack), else the code's thana; post office matched to that upazila's unions
+    (1–2 letters) or the district's places (1 letter, 5+ letters); stray label words ("বাসা") removed.
+    `mergeAddress(raws)`: votes district, then upazila / code among readings that agree; village / house / unknown post
+    office = the reading closest to all others. Stress test (2,000 made-up addresses from real places, OCR-like damage,
+    3 readings): district / upazila 100 %, code 99 % (rest empty, 0 wrong), post office 96 %. Rule kept: an empty box is
+    better than a wrong place.
+  - **NID reader on real cards (23 Nov, later):** test set = 7 of the owner's cards (smart / old laminated / digital
+    print, faded pink, rotated, upside down, phone screenshot) + 3 made-up scan pages (A4 JPG front above back, side by side,
+    PDF). Runner: the reader in the browser with `globalThis.__nidDebug = true` → `globalThis.__nidLast` = the result incl.
+    every raw reading (nid-reader.jsx); readings saved and replayed through the parser offline. Result: 60 right, 14 empty,
+    7 wrong (small spelling: ূ/ু, a misread first letter) of 81 boxes; clear photos, scans and the PDF read fully; the two
+    very faded pink photos read almost nothing (UI asks for a clearer photo).
+    Changes: **nid.js** — `cardsIn` → `{ pieces: [{ c, card }] }`: two cards on one page (`findTwoCards`, each 1.4–1.8 : 1,
+    similar size, together < 70% of the picture, not one inside the other — half a close-up card is ~1.26 : 1 and a card
+    in its sleeve overlaps); one card found on a page (< 40% of it) → the rest of the page is read too; **PDF** files
+    (first 2 pages, pdfjs-dist again — worker copied to `/vendor/pdfjs/`) and `accept="image/*,application/pdf"`;
+    orientation scores `<<<<` (+) / `>>>>` (−) and tries sideways turns when nothing reads; `prepareEven` (darkest colour
+    channel, light evened out) used only when the normal copy reads badly; machine lines read again cut out and enlarged.
+    **nid-address.js** — barcode / machine lines read as digits are dropped (`junkLine`); line breaks = spaces (the card
+    breaks lines inside names); labels বাসা / বাড়ি, "নং:" / "নং/নাম:" rest-of-label words, a short word stuck before a
+    label ("গম রাস্তা:") dropped; words before a ":" after a known label = misread next label; post codes never start
+    with ০ (a holding number "০১৪৮ ০০" was taken as the code); a code from another district is dropped (no "nearest code"
+    — the list misses real codes such as ২২০৭ মোমেনশাহী সেনানিবাস), code = most readings; upazila from the text, the code's
+    thana only as a fallback; পৌরসভা / সিটি কর্পোরেশন not put in থানা; village = `agreed()` (words other readings share),
+    empty when 3+ readings and none agree; post office name = `commonEnd()` (the ending half the readings share); readings
+    with no label, code or district are ignored. Bangla-digit length check fixed (`\D` also matched Bangla digits).
+  - `components/tools/deed-writer.jsx` — template cards, people (each party; "NID থেকে পূরণ"; জামিনদার add / remove; "আগের মানুষ থেকে পূরণ" from `deed:people`, the
+    last 80 people saved when printing), details, সাক্ষী card (count, optional name / address, fill from a saved person), wording/conditions editor, page settings (per template, `deed:page:<id>`),
     draft per template (`deed:draft:<id>`), Print (waits 350 ms so the last Banglish word converts).
 - **CV maker** (20 Nov, browser only, no DB) — like the shop's Word CV (A4, margins 20.3 mm top/bottom · 25.4 mm sides,
   Poppins 10 pt, "Resume Of" + name, photo top right, gradient heading bars in Times New Roman, ❖ Label : Value rows,
   bordered experience table, declaration + signature line):
-  - `src/lib/cv/model.js` — CV = `{ v, theme, title, name, contact[{id,text}], photo (JPEG data URL 540×680), sections[] }`.
+  - `src/lib/cv/model.js` — CV = `{ v, theme, title, name, contact[{id,text}], photo (JPEG data URL 540×680),
+    layout: { breakAt: "auto" | block key, size: "auto" | pt }, sections[] }`.
     Section types text · languages · experience · education · keyvalue · list · references · declaration (see file header);
     every list is dynamic. `emptyCv()` (the shop's usual sections; Computer skills / Training / References start hidden),
     `newSection`, `blank.*`, `themes` (6 colours), `visibleSection` (null when empty or hidden → a fresher's empty experience
     disappears with its heading), `shownSections(cv)` (used by print and Word; signature name falls back to the name),
     `contactLines` (drops "Email : " with no value), `isCv`, `fileName`.
-  - `src/lib/cv/html.js` — `cvBlocks(cv, fit)` → unbreakable blocks (`keep` = heading / table header stays with the next
-    block, `head` = table header repeated on a new page). Rows sit on fixed grid columns, so nothing can drift out of line.
-    `paginate(blocks, measure)`. **Always 2 pages:** `layoutCv(cv, measure, setFont, "two")` binary-searches the spacing
-    `k` (0.55–1.8; gaps × k, line heights × 1 + (k−1)·0.35) for the largest that still fits 2 pages (−0.04 room so Word
-    never spills), then only if needed the font `f` (1 → 0.88); a very short CV is split before the heading nearest the
-    middle; `tooLong` when even that is 3+ pages (UI warns). `pageStarts(pages)` = block keys that start page 2.
+  - `src/lib/cv/html.js` — `cvBlocks(cv, fit)` → unbreakable blocks with `key` and `label` (`keep` = heading / table header /
+    exam title stays with the next block, `head` = table header repeated on a new page). Education rows are separate blocks
+    (key `${id}:${exam}.${row}`), so a page can end inside an exam. Rows sit on fixed grid columns, so nothing drifts.
+    **Always 2 pages — `layoutCv(cv, measure, setFont, cv.layout)`:** every block's height is a straight line in the spacing
+    k (gaps × k, line heights × 1 + (k−1)·0.35), so each block is measured at k 0.6 and 1.6 only. For every place page 2 can
+    start (not after a `keep` block; no lonely row: ≥ 2 rows of a list / exam / table each side) each page gets its OWN
+    spacing (largest that fills it, 1.5 mm kept free; k 0.55–2). Auto picks the place where both pages fill most evenly
+    (|log k1 − log k2|, small penalty for breaking inside a section) → page 1 never ends with a big gap. Page 2 ≤ 20% looser
+    than page 1. Auto text size: 10 pt; shrinks (9.6 → 8.8) when it doesn't fit; grows (10.4 → 11.2) when page 1 would
+    still be loose at the widest spacing. Staff can pick the size (9–11 pt) and "Page 2 starts at" (`choices` = the valid
+    places; a choice that doesn't fit → auto + `breakIgnored` warning). Result checked with real measurements.
+    Returns `{ pages, fit: { k1, k2, f }, breakKey, choices, tooLong, breakIgnored }`. `paginate` = the fallback when even
+    the tightest spacing and smallest text is 3+ pages (`tooLong`, UI warns).
     The first heading's gap is fixed 6 pt (a smaller one confuses LibreOffice's layout of the bar under the header table).
   - `src/components/cv/cv-pages.jsx` — `CvPages({ cv, onLayout })`: measures blocks in a hidden box (cached), lays out,
     shows scaled A4 sheets, portals a real-size copy into `#cv-print-root` (print CSS: `@page A4 margin 0`, colours exact).
-    `onLayout({ pages, fit, breaks, tooLong })`.
-  - `src/lib/cv/docx.js` — `cvToDocx(cv, { fit, breaks })` → Blob. Raw WordprocessingML zipped with fflate (no package).
+    `onLayout({ pages, fit, breakKey, choices, tooLong, breakIgnored })`.
+  - `src/lib/cv/docx.js` — `cvToDocx(cv, { fit, breakKey })` → Blob. Raw WordprocessingML zipped with fflate (no package).
     Heading bars = inline gradient text boxes, header = borderless table with an inline photo, ❖ rows = tab stops + hanging
     indent (long addresses wrap under the value), experience table repeats its header row and rows never split. Poppins'
-    "single" line in Word is 1.5 em, so CSS line heights ÷ 1.5. Same `fit` as the print; `w:pageBreakBefore` only on the
-    section heading that starts page 2 (inside tables/lists Word flows by itself). Checked by rendering with LibreOffice:
-    sample, fresher and a 12-job CV all 2 pages in print and Word.
+    "single" line in Word is 1.5 em, so CSS line heights ÷ 1.5. Gaps between parts are exact-height empty paragraphs
+    (`gap(pt)`, `lineRule="exact"`) matching the print's padding. Page 1 uses k1, page 2 k2 (both × 0.96 so Word never
+    spills); the block that starts page 2 gets `w:pageBreakBefore` (a table is split into two tables there, header
+    repeated). Checked by rendering with LibreOffice: sample, short, fresher, 12-job, manual break, 11 pt — all 2 pages,
+    page 2 starting at the same block as the print.
   - `components/tools/cv-maker.jsx` — saved CVs (`cv:saved`, Save / Save changes / Open / Delete / New CV), draft autosave
     (`cv:draft`), name/title/contact lines, photo (PhotoSlot crop 27:34 → JPEG), colour, one card per section (rename,
-    show/hide, move, delete, rows add/remove/move), Add a section, sticky preview with Print + Save Word. The CV state is
+    show/hide, move, delete, rows add/remove/move), Add a section, sticky preview with "Page 2 starts at" + "Text size"
+    (saved in `cv.layout`), Print + Save Word. The CV state is
     made after mount (random row ids must not differ from the server render).
+- **Order presets** (`src/lib/photo/orders.js`, 23 Nov): `orderPresets` (4 passport, 5 passport, 4 passport + 2 stamp,
+  3 + 4, 4 + 4, 8, 25, 8 stamp, e-passport, square visa), `sameOrder`, `validOrder` — used by Auto passport and Passport
+  photo sheet. Photo sheet: tool-wide order (`photo-sheet:order` in localStorage) applied to every photo; each person
+  keeps `order` rows (own copies, 0 allowed), `edit` (main crop) + `edits["WxH"]` for sizes of another shape ("Crop for …"
+  chips; passport and stamp share one crop); items carry `group: person` so one customer's sizes stay on one row.
 - **Bangla numbers:** `src/lib/number-words.js` has the full irregular 0–99 list, lakh/crore, `parseAmount` accepts Bangla digits.
   `toBanglaDigits` / `fromBanglaDigits` in `src/lib/utils.js`.
 
@@ -378,40 +436,27 @@ src/
     (app)/layout.jsx               requireUser + AppShell + ToastProvider
     (app)/page.jsx                 tool hub (search)
     (app)/settings/page.jsx        Shop details · Team · My password (operators see My password only)
-    (app)/accounts/                page (overview) · sale · expense · entries (+ [id]) · people (+ [id]) · prices ·
-                                   reports (owner) + reports/export/route.js (CSV, owner)
-    print/                         layout (requireUser, no shell) · receipt/[id] · payment/[id] · statement/[id] · rates
-    (app)/tools/<slug>/page.jsx    one per tool: auto-passport, photo-sheet, remove-bg, joint-photo, id-card-print, page-arranger, job-photo,
-                                   pdf-merge, pdf-split, pdf-organize, images-to-pdf, pdf-to-images, pdf-compress,
-                                   pdf-protect, pdf-watermark, deed-writer, cv-maker, bangla-typing, bijoy-unicode, image-to-text,
-                                   image-resize, age-calculator, amount-in-words
+    (app)/tools/<slug>/page.jsx    one per tool: auto-passport, photo-sheet, remove-bg, joint-photo, id-card-print,
+                                   deed-writer, cv-maker
   components/
     ui/        button, form ("use client"), misc, interactive ("use client"), file-drop ("use client"), sortable.js
     shell/     app-shell (sidebar + mobile menu), tool-hub, tool-icon, login-form
     settings/  settings-view
     photo/     crop-editor, photo-slot, sheet-panel, sheet-output, bg-picker, use-portraits.js, person-card, card-slot,
                card-page, passport-editor, adjust-panel, cutout-choice
-    pdf/       pdf-bits (PdfPicker, usePdfjsDoc, useRenderDocs, PageThumb, ResultFiles, useJob)
-    accounts/  bits (MoneyInput, PartyPicker, useQueryState, RangePicker, Pager, Stat), sale-form (+ partyPayload),
-               expense-form, entry-table, entry-filters, void-button, party-forms (PartyFormButton, PaymentForm,
-               ArchivePartyButton, PeopleFilters), price-editor (PriceEditor, AccountSettingsForm)
-    print/     paper (Paper, ShopHeading, receiptSizes), print-bar, print-button
-    deeds/     deed-pages (DeedPages, blockHtml, deedPapers, deedFonts, defaultPageSettings), bn-input
+    deeds/     deed-pages (DeedPages, blockHtml, deedPapers, deedFonts, defaultPageSettings), bn-input, nid-reader
     cv/        cv-pages (CvPages: measure → 2-page layout → preview + print copy)
     tools/     one client component per tool (same names as the slugs)
-  lib/         tools.js (registry: groups + tools), utils.js, age.js, number-words.js, zip.js, clipboard.js, accounts.js,
-               use-stored.js, photo/ (sizes, image, sheet, export, signature, card, enhance, adjust, ai/ (faces, matte, portrait, tone, retouch, look)), pdf/ (engine, ops, images, raster, stamp),
-               bangla/ (convert, avro, ocr), deeds/ (format, templates), cv/ (model, html, docx)
+  lib/         tools.js (registry: groups + tools), utils.js, number-words.js, zip.js, use-stored.js,
+               photo/ (sizes, orders, image, sheet, export, signature, card, enhance, adjust, ai/ (faces, matte, portrait, tone, retouch, look)),
+               bangla/ (avro), deeds/ (format, templates, nid, nid-parse, nid-address, bd-places), cv/ (model, html, docx)
   db/          schema.js, index.js, url.js, add-user.js (`npm run user:add`)
   server/      auth.js, session.js (getCurrentUser, requireUser, requireOwner, getOwner, safeNext), errors.js,
                queries/settings.js (getShop, getTeam), actions/auth.js (signIn, signOut),
                actions/settings.js (saveShop, addMember, setMemberActive, setMemberRole, resetMemberPassword, changeMyPassword),
-               queries/accounts.js (getAccountSettings, listPriceItems, listParties, searchParties, getParty, getPartyLedger,
-               listEntries, getEntry, getPayment, getOverview, getReport, listStaff, PAGE_SIZE 50),
-               actions/accounts.js (saveSale, saveExpense, voidEntry, savePayment, voidPayment, saveParty, archiveParty,
-               findParties, savePriceItem, deletePriceItem, movePriceItem, saveAccountSettings), csv.js
+               (accounts queries/actions and csv.js removed 23 Nov)
 
-scripts/copy-vendor.mjs   copies pdf.js worker/fonts/wasm, qpdf, tesseract (worker, 3 core files, ben/eng data), avro-lib.js,
+scripts/copy-vendor.mjs   copies tesseract (worker, 3 core files, ben/eng data), avro-lib.js,
                           onnxruntime-web (ort.wasm.min.mjs + simd-threaded .mjs/.wasm), models/modnet.onnx (+ NOTICE) and
                           @mediapipe/face_mesh into public/vendor (postinstall / predev / prebuild; `npm run vendor`). ~80 MB.
 public/workers/matte.js   background-removal worker (committed)
@@ -451,23 +496,10 @@ Schema change → edit `schema.js`, tell the owner to run `npm run db:push`, upd
 - Owner can set a new password for anyone (signs them out). Changing your own password signs out your other devices.
 - Photo sizes: passport 38×48, 40×50, e-passport 45×55, stamp 20×25, square visa 51×51, custom. Papers: A4, 4R, 3R, 5R, A5,
   Letter, Legal. Output 300 DPI.
-- Job photo presets: Teletalk/BPSC photo 300×300 ≤100 KB, signature 300×80 ≤60 KB (UI tells operators to check the circular).
-- Age limit check: within the max if years < max, or exactly max years 0 months 0 days.
-- PDF: merge accepts PDFs and photos (photo → A4 page, 10 mm margin). Split: by ranges (one file each), every page, or picked
-  pages (one file). Compress: Light = lossless re-save; Medium 150 DPI q0.7; Strong 110 DPI q0.55; "Under a size" walks a
-  DPI/quality ladder down to 72 DPI and says so if it still doesn't fit; result says when the file didn't get smaller.
-  Lock = AES-256, random owner password, print/copy/edit switches. Unlock needs the password (empty works for
-  restriction-only PDFs). Watermark text/logo + page numbers (6 styles incl. Bangla digits), preview uses the same drawing code.
-- Bangla typing: word converts on space / Enter (works with phone keyboards because it watches the inserted character, not
-  keydown). Ctrl+M switches Bangla/English. Draft kept in localStorage (`shop-tools:bangla-typing`). "Copy for SutonnyMJ" =
-  Unicode → Bijoy. Bijoy ↔ Unicode text tool warns when the pasted text looks like the other encoding. OCR accepts images and
-  PDFs (pages rendered at scale 3 ≈ 216 DPI), output is editable, shows the reader's confidence.
-- Accounts: a sale needs ≥1 item; discount ≤ total; paid ≤ total − discount ("give the change back"); leaving baki needs a
-  customer (picked or typed — a typed phone that already exists reuses that person). Expense: paid ≤ amount; owing part needs a
-  supplier. Payments can't exceed what's owed. Dates can't be in the future. Profit = sales (after discount) − expenses, counted
-  on the entry date; "cash in hand" = money that actually moved (paid parts + baki payments). Operators: no Reports, no CSV,
-  no price/expense-type editing, see "New baki today" instead of profit. People can be removed from lists (owner, zero balance
-  only); history stays.
+- Banglish typing (deed writer `BnInput`): word converts on space / Enter (works with phone keyboards because it watches the
+  inserted character, not keydown). Ctrl+M switches Bangla/English.
+- Removed on 23 Nov (owner's choice; the code is in the 20 Nov zip if ever wanted back): job photo, age calculator, PDF tools,
+  Bangla typing / Bijoy / OCR pages, image resize, page arranger, shop accounts.
 
 ---
 
@@ -475,6 +507,14 @@ Schema change → edit `schema.js`, tell the owner to run `npm run db:push`, upd
 
 | Date | Change | Next |
 | --- | --- | --- |
+| 2026-11-23 | **NID reader tuned on the owner's real cards + scans / PDF.** গ্রাম no longer filled with barcode digits; label bits (নং, হো পয, গম) no longer end up in the boxes; holding numbers no longer taken as the post code; a wrong code can no longer change the thana. One scan / photocopy / **PDF page with both sides** is now read (each side found and read). Faded, tinted or sideways photos get a second try with the light evened out. Tested on 7 real cards + 3 scan pages: names, parents, NID right on all readable cards; full address right on clear photos, scans and the PDF; very faded pink photos still need a clearer photo. **Package back: pdfjs-dist** (for PDFs). No DB change. | More real cards if some still read badly |
+| 2026-11-23 | **Trimmed + deed address + NID address + photo sheet orders.** Removed (owner's choice): Page arranger, Job photo & signature, all 8 PDF tools, Banglish typing / Bijoy ↔ Unicode / Image to text pages, Resize & compress, Age calculator, Amount in words, and the whole Shop accounts section (pages, receipts, print pages, actions, queries). The deed writer's Banglish typing, the NID reader and Bangla numbers still work (their engines stay). DB tables for accounts are left in the schema (no data dropped, no `db:push` needed). Deed writer: address is **5 boxes again** (বাসা/হোল্ডিং, গ্রাম/রাস্তা, ডাকঘর, থানা/উপজেলা, জেলা); 20–23 Nov drafts / saved people split back automatically. NID থেকে পূরণ fills the 5 boxes; the address is checked against Bangladesh's districts, upazilas / city thanas, unions and post codes, read in 6 image versions and voted — tested on made-up cards incl. a heavily blurred one (all parts right). Passport photo sheet: one-tap orders (5 passport, 4 passport + 2 stamp, …), several sizes per person, per-person copies. Packages removed: pdfjs-dist, @neslinesli93/qpdf-wasm, bijoy-unicode-converter, bijoy2unicode. No DB change. | Real NID photos from the shop to fine-tune |
+| 2026-11-20 | **NID reader: fewer English-letter mix-ups.** Bangla lines and the address are now read by a Bangla-only reader; jumbled misread words, stray bits at the end and quote marks are removed; missing ":" after labels put back; names keep their last word (… নাগর মিয়া) and lose stray bits; date of birth from the smart card's machine lines is trusted (fixed 1983 → 1988). Tested on 3 cards: names, parents, NID right on all; smart-card address mostly right; old laminated card's 2nd address line and faded addresses still read poorly. No new packages, no DB change. | Online reader (Gemini) for addresses if the owner wants them near-perfect |
+| 2026-11-20 | **Address in one box.** Deed writer people (parties, জামিনদার, saved people) now have one **ঠিকানা** box instead of 5 (বাসা, গ্রাম, ডাকঘর, উপজেলা, জেলা) — written the way it is on the NID and on stamp paper. NID থেকে পূরণ fills the whole address as printed on the card (no more parts lost by splitting); junk from bad readings is removed and the best reading is chosen. Old drafts and saved people are joined into the one box automatically. Can be undone. No new packages, no DB change. | Online reader (Gemini) if the owner wants faded cards read |
+| 2026-11-20 | **NID reader: fewer wrong letters, no wrong information.** District checked against the 64 districts (misread → corrected, unknown → left empty), common name words corrected (বেগন → বেগম, last word মিছ → মিয়া), impossible Bangla words and barcode digits dropped from names and addresses, a post office whose label was misread keeps only its code. Missing address parts are filled from the other readings. No new packages, no DB change. | Online reader (Gemini) if the owner wants faded cards read |
+| 2026-11-20 | **NID reader reads more.** A card that is small in the photo is now cut out and enlarged; every line is read again on its own, enlarged (father / mother now come through on smart cards); the smart card's address is read again in colour. Takes ~10–35 s per person. Tiny / faded address print still needs a close photo. No new packages, no DB change. | Owner decides on an online reader (Gemini) for hard photos |
+| 2026-11-20 | **Deed writer: NID থেকে পূরণ.** On every person (১ম পক্ষ, ২য় পক্ষ, জামিনদার…) a button reads the NID — photos of the front and back (smart card or old card, any way up) or one photocopy page with both sides — on this computer, nothing uploaded. Shows what it read in editable boxes with tick boxes (plus English name, date of birth, blood group to check against the person); "Fill" puts name, father, mother, address parts and NID number into the form. The smart card's machine lines confirm the NID number. Clear photos work well; washed-out / tiny photos read little — staff types the rest. No new packages (uses the tesseract.js already used by Image to text), no DB change. | Real photocopies from the shop to fine-tune |
+| 2026-11-20 | **CV: no more gap on page 1 + deeds: many জামিনদার / সাক্ষী.** CV pages now each get their own spacing, and page 2 starts where both pages fill evenly, so page 1 is always full; short CVs get slightly bigger text instead of big gaps; an exam can now continue on page 2 (never one lonely row). New **Page 2 starts at** (move a section to the other page) and **Text size** (Auto, 9–11 pt), saved with the CV; Word follows both. Deed writer: **add as many জামিনদার as needed** (হাওলাদনামা — each gets a party block, a signature line and is named in the condition), **সাক্ষী on every deed**: any number (1–12), optional name and address printed under each line, fill from a saved person. Old drafts are converted. No new packages, no DB change. | NID → deed auto-fill (owner to send sample photos) |
 | 2026-11-20 | **CV maker** (সিভি / রিজিউম তৈরি, Job application group). Same look as the shop's Word CV, but every row is on fixed columns, so labels, colons and values always line up and long addresses wrap under the value. Dynamic: no experience → the section disappears; add as many jobs / exams / lines / sections as needed; rename, hide, reorder sections; 6 colours. **Always exactly 2 pages** — spacing stretches or tightens by itself (font a little smaller only if needed). Print in colour (or Save as PDF), **Save Word** (.docx, same spacing, page 2 starts at the same heading), saved CVs + autosaved draft in the browser. **New package: `@fontsource/poppins` 5.3.0.** No DB change. | More document templates, visiting cards |
 | 2026-11-18 | **Best background removal (free, Cloudflare) + editor zoom + forehead fix.** New "Background removal: Best (Cloudflare) / Offline" in Auto passport, Remove background and Joint photo: Best sends the photo to the shop's own Cloudflare Worker (BiRefNet, free 5,000 photos/month, never billed) through the new `/api/cutout` route; anything goes wrong → done offline with a notice. Owner chose this over Gemini (Gemini image editing has no free API tier). Retouch / Background brushes: scroll to zoom, Space / right-drag / Hand to move, Face / Whole photo buttons. Face touch-up no longer leaves a light line across the forehead. **Setup: Cloudflare Worker + 2 Vercel env vars (see §4).** No new packages, no DB change. | Owner sets up Cloudflare; test Best on real photos |
 | 2026-11-17 | **Tested on 112 photo variations + colour fix.** 7 real shop photos × 16 conditions (bulb / tube light / shade, dark, over-exposed, darker / fairer skin, white / clothes-coloured / busy / dark wall, bright sky, WhatsApp quality, tilted, far away), plus the real tools in the browser (Auto passport with 6 photos, presets, touch-up levels, keep background, editor tabs, PDF; Remove background; Joint photo; NID; Photo sheet) — no errors. Cut-out was steady on every background. Fixed: room-light colour casts are now removed (orange bulb, green tube light, blue shade), dark photos are lifted more, and new warnings for over-exposed or very dark photos. No new packages, no DB change. | Real shop photos under bulb light |
@@ -505,6 +545,8 @@ Schema change → edit `schema.js`, tell the owner to run `npm run db:push`, upd
 2. ✅ PDF tools (merge, split, organize, photos ↔ PDF, compress, lock/unlock, watermark, page numbers). Later: sign/stamp a PDF.
 3. ✅ Bangla typing (Banglish typing, Bijoy ↔ Unicode text + Word files, image/PDF → text).
 4. ✅ Shop accounts (sales, expenses, baki, receipts, customers/suppliers, reports, price list).
+(23 Nov: batches 2, 3 and 4 were removed from the app by the owner — see the progress log.)
+
 5. **Documents & print** — 5a ✅ Deed writer with the owner's 4 templates (15 Nov). 5b ✅ CV maker (20 Nov). Still to come (send templates): deeds and applications (sale deed, mortgage/kot-bondhok, affidavit, applications), visiting cards,
    Halkhata cards, notices, certificates — fill-in templates with print/PDF.
 6. ✅ (mostly) **AI photo:** auto passport, background removal/colour, joint photo, card straightening — done offline in the photo

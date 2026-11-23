@@ -7,6 +7,7 @@ import { renderPortrait } from "@/lib/photo/ai/look";
 import { headSizes, passportEdit } from "@/lib/photo/ai/portrait";
 import { beautyPresets } from "@/lib/photo/ai/retouch";
 import { defaultEdit, renderEdit } from "@/lib/photo/image";
+import { orderPresets as presets, sameOrder } from "@/lib/photo/orders";
 import { getPhotoSize, photoSizes } from "@/lib/photo/sizes";
 import { useStoredState } from "@/lib/use-stored";
 import { cn } from "@/lib/utils";
@@ -30,24 +31,6 @@ const DEFAULTS = {
   fix: true,
   beauty: "natural",
 };
-
-/** One-tap orders that studios print most often. */
-const mix = (pp, st) => [
-  { sizeId: "passport", copies: pp },
-  { sizeId: "stamp", copies: st },
-];
-const presets = [
-  { label: "4 passport", order: [{ sizeId: "passport", copies: 4 }] },
-  { label: "5 passport (1 row)", order: [{ sizeId: "passport", copies: 5 }] },
-  { label: "4 passport + 2 stamp", order: mix(4, 2) },
-  { label: "3 passport + 4 stamp", order: mix(3, 4) },
-  { label: "4 passport + 4 stamp", order: mix(4, 4) },
-  { label: "8 passport", order: [{ sizeId: "passport", copies: 8 }] },
-  { label: "25 passport (full A4)", order: [{ sizeId: "passport", copies: 25 }] },
-  { label: "8 stamp", order: [{ sizeId: "stamp", copies: 8 }] },
-  { label: "4 e-passport / visa", order: [{ sizeId: "e-passport", copies: 4 }] },
-  { label: "2 square visa", order: [{ sizeId: "us-visa", copies: 2 }] },
-];
 
 const validSettings = (s) =>
   s &&
@@ -159,7 +142,7 @@ export function AutoPassportTool() {
                   onClick={() => set({ order: pr.order.map((r) => ({ ...r })) })}
                   className={cn(
                     "h-8 rounded-full border px-3 text-xs font-medium",
-                    JSON.stringify(pr.order) === JSON.stringify(settings.order)
+                    sameOrder(pr.order, settings.order)
                       ? "border-brand-300 bg-brand-50 text-brand-700"
                       : "border-line-strong text-ink-700 hover:bg-ink-50",
                   )}

@@ -99,6 +99,7 @@ export function emptyCv() {
         name: "",
         contact: ["", "Cell : ", "Email : "].map((text) => ({ id: uid(), text })),
         photo: null,
+        layout: { breakAt: "auto", size: "auto" }, // where page 2 starts, text size (see html.js layoutCv)
         sections: [
             {
                 ...newSection("text", "CAREER OBJECTIVE"),

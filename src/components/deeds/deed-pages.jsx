@@ -84,11 +84,23 @@ export function blockHtml(b) {
         return `<div style="display:flex;justify-content:center;padding-bottom:0.6em"><table style="border-collapse:collapse">${rows}</table></div>`;
     }
     if (b.t === "sign") {
+        // witnesses: a list of { name, address } (or a number from older templates); rows also go on for party signatures
+        const W = Array.isArray(b.witnesses) ? b.witnesses : Array.from({ length: Number(b.witnesses) || 0 }, () => ({}));
+        const lastRight = Math.max(-1, ...b.right.map((x) => x.row));
+        const n = Math.max(W.length, lastRight + 1);
         const rows = [];
-        for (let i = 0; i < b.witnesses; i++) {
+        for (let i = 0; i < n; i++) {
             const r = b.right.find((x) => x.row === i);
+            const w = W[i];
+            const who = w ? [w.name?.trim(), w.address?.trim()].filter(Boolean) : [];
+            const left = w
+                ? `<span style="display:block;border-bottom:1px dotted #000;padding-bottom:0.15em">${bn(i + 1)}।</span>${who.length
+                    ? `<span style="display:block;font-size:0.85em;line-height:1.35;padding-top:0.1em">${who.map(rich).join(", ")}</span>`
+                    : ""
+                }`
+                : "";
             rows.push(
-                `<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:2em;min-height:3em"><span style="flex:1;border-bottom:1px dotted #000;padding-bottom:0.15em">${bn(i + 1)}।</span><span style="flex:1;text-align:center">${r ? `<span style="display:block;border-top:1px solid #000;padding-top:0.15em">${esc(r.label)}</span>` : ""}</span></div>`,
+                `<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:2em;min-height:3em;${who.length ? "padding-bottom:0.2em;" : ""}"><span style="flex:1">${left}</span><span style="flex:1;text-align:center">${r ? `<span style="display:block;border-top:1px solid #000;padding-top:0.15em">${esc(r.label)}</span>` : ""}</span></div>`,
             );
         }
         return `<div style="padding-bottom:0.6em"><div style="font-weight:700;text-decoration:underline;text-underline-offset:0.18em;padding-bottom:0.3em">${esc(b.title)}</div>${rows.join("")}</div>`;

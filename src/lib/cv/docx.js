@@ -29,6 +29,7 @@ const POPPINS_LINE = 1.5; // Poppins: ascent + descent + gap = 1.5 em
 
 /** Same spacing / font scale as the print (see html.js layoutCv): k = gaps, f = font. */
 let FIT = { k: 1, f: 1 };
+const WORD_K = 0.96; // Word's gaps a little tighter than the print's, so a page that is full in print never spills in Word
 const lhK = () => 1 + (FIT.k - 1) * 0.35;
 
 /** One run of text. Line breaks inside become <w:br/>. */
@@ -47,6 +48,13 @@ function run(text, { b, u, color, size, font } = {}) {
 const tab = () => "<w:r><w:tab/></w:r>";
 
 /** One paragraph. opts: align, before/after (pt), line (multiple), ind {left, hanging, right} mm, tabs [mm], border. */
+/** An empty paragraph exactly `pt` points tall (× spacing k) — the same gaps as the print's padding. */
+const gap = (pt, o = {}) =>
+    `<w:p><w:pPr>${o.pageBreak ? "<w:pageBreakBefore/>" : ""}${o.keepNext ? "<w:keepNext/>" : ""}<w:spacing w:before="0" w:after="0" w:line="${Math.max(
+        20,
+        Math.round(pt * FIT.k * 20),
+    )}" w:lineRule="exact"/><w:rPr><w:sz w:val="2"/></w:rPr></w:pPr></w:p>`;
+
 function para(runs, o = {}) {
     const empty = !runs || (Array.isArray(runs) && !runs.length);
     // Gaps grow / shrink with k; line heights a little (as lh() in html.js); an empty spacer line is all gap.
@@ -167,30 +175,30 @@ function headerXml(cv, t, hasPhoto) {
     const left = [
         cv.title?.trim() ? para(run(cv.title, { b: true, color: t.title, size: SIZES.title }), { align: "center", line: 1.15 }) : "",
         cv.name?.trim() ? para(run(cv.name, { b: true, color: t.title, size: SIZES.name }), { align: "center", line: 1.2 }) : "",
-        para("", { line: 1, after: contact.length ? 6 : 0 }),
+        gap(contact.length ? 10 : 2),
         cv.name?.trim() && contact.length ? para(run(cv.name), { line: 1.55 }) : "",
-        ...contact.map((c) => para(run(c), { line: 1.55 })),
+        ...contact.map((c, i) => para(run(c), { line: 1.55, after: i === contact.length - 1 ? 3 : 0 })),
     ].join("");
     if (!hasPhoto) return left;
-    const gap = 6;
+    const space = 6;
     const right = para(photoRun("rIdPhoto"), { align: "right", rawLine: 1 });
-    return table([CONTENT_W - SIZES.photoW - gap, SIZES.photoW + gap], [[left, right]], { cellPad: 0, vAlign: "bottom" });
+    return table([CONTENT_W - SIZES.photoW - space, SIZES.photoW + space], [[left, right]], { cellPad: 0, vAlign: "bottom" });
 }
 
 /**
  * Rows of a table, split into separate tables where the print starts a new page (a page break can't go inside a table).
- * keys[i] = block key of row i; header (optional) is repeated on top of each part.
+ * brk[i] = true when page 2 starts at row i; header (optional) is repeated on top of each part.
  */
-function splitTable(widths, rows, keys, pb, opts, header) {
+function splitTable(widths, rows, brk, opts, header) {
     const parts = [[]];
     rows.forEach((r, i) => {
-        if (i && pb(keys[i])) parts.push([]);
+        if (i && brk[i]) parts.push([]);
         parts[parts.length - 1].push(r);
     });
     return parts
         .map(
             (part, n) =>
-                (n || pb(keys[0]) ? para("", { line: 0.4, pageBreak: true }) : "") +
+                (n || brk[0] ? gap(2, { pageBreak: true }) : "") +
                 table(widths, header ? [header, ...part] : part, { ...opts, header: !!header }),
         )
         .join("");
@@ -212,9 +220,9 @@ function sectionXml(s, t, pb) {
             const cols = Math.min(3, s.items.length);
             const w = (CONTENT_W - SIZES.indent) / cols;
             const rows = [];
-            const keys = [];
+            const brk = [];
             for (let i = 0; i < s.items.length; i += cols) {
-                keys.push(k(rows.length));
+                brk.push(pb(k(rows.length)));
                 const row = s.items.slice(i, i + cols).map(
                     (l) =>
                         para(run(`❖ ${l.name}${l.name?.trim() ? ":" : ""}`, { b: true }), { line: 1.5 }) +
@@ -225,25 +233,19 @@ function sectionXml(s, t, pb) {
                 while (row.length < cols) row.push("<w:p/>");
                 rows.push(row);
             }
-            return splitTable(Array(cols).fill(w), rows, keys, pb, { indent: SIZES.indent, cellPad: 0 }) + para("", { line: 0.5 });
+            return gap(1) + splitTable(Array(cols).fill(w), rows, brk, { indent: SIZES.indent, cellPad: 0 }) + gap(4);
         }
         case "experience": {
             const widths = SIZES.jobCols.map((p) => (CONTENT_W * p) / 100);
             const cell = (v, b) => para(run(lines(v).join("\n"), { b }), { align: "center", line: 1.45 });
             const header = ["Name of Company", "Designation", "Location", "Duration"].map((h) => cell(h, true));
-            const rows = s.items.map((j) => [j.company, j.designation, j.location, j.duration].map((v) => cell(v, false)));
-            const keys = s.items.map((_, i) => k(i));
+            const brk = [];
+            const rows = s.items.map((j, i) => {
+                brk.push(pb(k(i)));
+                return [j.company, j.designation, j.location, j.duration].map((v) => cell(v, false));
+            });
             return (
-                para("", { line: 0.4 }) +
-                splitTable(
-                    widths,
-                    rows,
-                    keys,
-                    (key) => key !== keys[0] && pb(key),
-                    { borders: true, cellPad: PT_MM * 3, vPad: PT_MM * 2 * FIT.k },
-                    header,
-                ) +
-                para("", { line: 0.6 })
+                gap(2) + splitTable(widths, rows, brk, { borders: true, cellPad: PT_MM * 3, vPad: PT_MM * 2 * FIT.k }, header) + gap(4)
             );
         }
         case "education":
@@ -253,8 +255,8 @@ function sectionXml(s, t, pb) {
                         (e.exam?.trim()
                             ? para(run(e.exam, { b: true, u: true }), { line: 1.6, after: 2, keepNext: true, pageBreak: pb(k(i)) })
                             : "") +
-                        e.rows.map((r, j) => kvPara(r.label, r.value, !j && !e.exam?.trim() && pb(k(i)))).join("") +
-                        para("", { line: 0.5 }),
+                        e.rows.map((r, j) => kvPara(r.label, r.value, pb(`${k(i)}.${j}`))).join("") +
+                        gap(4),
                 )
                 .join("");
         case "keyvalue":
@@ -264,9 +266,9 @@ function sectionXml(s, t, pb) {
         case "references": {
             const w = (CONTENT_W - SIZES.indent) / 2;
             const rows = [];
-            const keys = [];
+            const brk = [];
             for (let i = 0; i < s.items.length; i += 2) {
-                keys.push(k(rows.length));
+                brk.push(pb(k(rows.length)));
                 const row = s.items.slice(i, i + 2).map(
                     (p) =>
                         para(run(p.name, { b: true }), { line: 1.5 }) +
@@ -277,7 +279,7 @@ function sectionXml(s, t, pb) {
                 while (row.length < 2) row.push("<w:p/>");
                 rows.push(row);
             }
-            return splitTable([w, w], rows, keys, pb, { indent: SIZES.indent, cellPad: 0 });
+            return gap(1) + splitTable([w, w], rows, brk, { indent: SIZES.indent, cellPad: 0 }) + gap(6);
         }
         case "declaration":
             return (
@@ -290,7 +292,7 @@ function sectionXml(s, t, pb) {
                         pageBreak: pb(k(0)),
                     })
                     : "") +
-                para("", { line: 1, before: 30, keepNext: true, pageBreak: !s.text?.trim() && pb(k(0)) }) +
+                gap(45.35, { keepNext: true, pageBreak: !s.text?.trim() && pb(k(0)) }) +
                 para(run(s.sign || ""), { borderTop: true, line: 1.5, ind: { right: CONTENT_W - 58 } })
             );
         default:
@@ -311,17 +313,22 @@ function fromDataUrl(url) {
 /**
  * Build the .docx.
  * @param {object} cv
- * @param {{ fit?: { k: number, f: number }, breaks?: string[] }} [layout]  from the preview, so Word has the same
- *   spacing and starts page 2 at the same place as the print
+ * @param {{ fit?: { k1: number, k2: number, f: number }, breakKey?: string | null }} [layout]  from the preview
+ *   (CvPages onLayout), so Word has the same spacing on each page and starts page 2 at the same place as the print
  * @returns {Blob}
  */
-export function cvToDocx(cv, { fit = { k: 1, f: 1 }, breaks = [] } = {}) {
+export function cvToDocx(cv, { fit = {}, breakKey = null } = {}) {
     shapeId = 100;
-    FIT = fit;
-    const brk = new Set(breaks);
-    // Word starts page 2 at the same section heading as the print. Inside a table or list Word is left to flow by itself
-    // (its rows can be a hair taller than the browser's, and a forced break there could push a row onto a 3rd page).
-    const pb = (key) => brk.has(key) && key.endsWith(":h");
+    const k1 = fit.k1 ?? fit.k ?? 1;
+    const k2 = fit.k2 ?? k1;
+    FIT = { k: k1 * WORD_K, f: fit.f ?? 1 };
+    // Called in order for every block key: at the block that starts page 2, page 2's spacing takes over and that
+    // paragraph (or table part) gets "page break before".
+    const pb = (key) => {
+        if (!breakKey || key !== breakKey) return false;
+        FIT = { ...FIT, k: k2 * WORD_K };
+        return true;
+    };
     const t = themes[cv.theme] ?? themes.blue;
     const photo = fromDataUrl(cv.photo);
     let body = headerXml(cv, t, !!photo);
@@ -330,7 +337,7 @@ export function cvToDocx(cv, { fit = { k: 1, f: 1 }, breaks = [] } = {}) {
         body += heading(s.title, t, first, pb(`${s.id}:h`)) + sectionXml(s, t, pb);
         first = false;
     }
-    if (body.endsWith("</w:tbl>")) body += para("", { line: 0.5 });
+    if (body.endsWith("</w:tbl>")) body += gap(1);
     const sect = `<w:sectPr><w:pgSz w:w="${tw(PAGE.w)}" w:h="${tw(PAGE.h)}" w:code="9"/><w:pgMar w:top="${tw(PAGE.top)}" w:right="${tw(
         PAGE.right,
     )}" w:bottom="${tw(PAGE.bottom)}" w:left="${tw(PAGE.left)}" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>`;
