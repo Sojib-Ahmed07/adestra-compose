@@ -1,415 +1,269 @@
 // src/components/tools/joint-photo.jsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { Download } from "lucide-react";
-import { renderPortrait } from "@/lib/photo/ai/look";
-import { headSizes, passportEdit } from "@/lib/photo/ai/portrait";
-import { beautyPresets } from "@/lib/photo/ai/retouch";
+import { useMemo, useState } from "react";
+import { ArrowLeftRight, Download, Trash2 } from "lucide-react";
 import { canvasToBlob, downloadBlob } from "@/lib/photo/export";
-import { defaultEdit, drawEdit, makeCanvas } from "@/lib/photo/image";
+import { defaultEdit, drawEdit, loadImage, makeCanvas } from "@/lib/photo/image";
 import { PX_PER_MM } from "@/lib/photo/sizes";
 import { useStoredState } from "@/lib/use-stored";
-import { CutoutChoice } from "@/components/photo/cutout-choice";
-import { BgPicker, KEEP } from "@/components/photo/bg-picker";
-import { PassportEditor } from "@/components/photo/passport-editor";
-import { PersonCard } from "@/components/photo/person-card";
+import { cn } from "@/lib/utils";
+import { CropEditor } from "@/components/photo/crop-editor";
 import { SheetPanel } from "@/components/photo/sheet-panel";
-import { usePortraits } from "@/components/photo/use-portraits";
 import { Button } from "@/components/ui/button";
 import { FileDrop } from "@/components/ui/file-drop";
-import { Checkbox, Field, NumberInput, Select } from "@/components/ui/form";
-import { Segmented, Slider, Stepper } from "@/components/ui/interactive";
+import { Field } from "@/components/ui/form";
+import { Segmented, Slider, Stepper, useToast } from "@/components/ui/interactive";
 import { Card, Step } from "@/components/ui/misc";
 
-const jointSizes = [
-  { id: "double", label: "Double passport — 76 × 48 mm", w: 76, h: 48 },
-  { id: "landscape", label: "Landscape 2.5 × 2 in — 64 × 51 mm", w: 64, h: 51 },
-  { id: "passport", label: "Passport size — 38 × 48 mm (all in one)", w: 38, h: 48 },
-  { id: "double-e", label: "Double e-passport — 90 × 55 mm", w: 90, h: 55 },
-  { id: "3r", label: "3R landscape — 127 × 89 mm", w: 127, h: 89 },
-  { id: "4r", label: "4R landscape — 152 × 102 mm", w: 152.4, h: 101.6 },
-  { id: "custom", label: "Custom size", w: 76, h: 48 },
-];
-
-const DEFAULTS = {
-  sizeId: "double",
-  custom: { w: 76, h: 48 },
-  bg: "#ffffff",
-  head: "normal",
-  close: 90,
-  beauty: "natural",
-  fix: true,
-  blend: 30, // soft join width (% of one person's part) when the original backgrounds are kept
-  seamBlur: 40, // extra blur over the join
-  blur: 0, // blur the kept backgrounds
+// Joint photo = the people side by side, each in their own equal part (never on top of each other).
+// w × h = the joint photo as made. `turn`: printed a quarter turn so the landscape joint photo fills an upright
+// passport space — 5 in a row on A4 like ordinary passport photos.
+const SIZES = {
+  original: { label: "Original — 2.5 × 1.9 in", hint: "3 in a row on A4", w: 63.5, h: 48.26 },
+  passport: { label: "Passport size — 1.5 × 1.9 in", hint: "turned, 5 in a row on A4", w: 48.26, h: 38.1, turn: true },
 };
-const valid = (s) =>
-  s &&
-  jointSizes.some((j) => j.id === s.sizeId) &&
-  typeof s.bg === "string" &&
-  s.head in headSizes &&
-  Number.isFinite(s.close) &&
-  Number.isFinite(s.custom?.w) &&
-  Number.isFinite(s.custom?.h);
 
+const DEFAULTS = { size: "original", blend: 0 };
+const valid = (s) => s && s.size in SIZES && Number.isFinite(s.blend);
 const MAX = 4;
+let nextId = 1;
+
+/**
+ * The frame each person is placed in (mm, in joint-photo coordinates). Person i owns the part [i·part, (i+1)·part];
+ * with blending, the frame reaches `blend / 2` into each neighbour so the two photos can fade into each other there.
+ */
+function frames(n, w, blend) {
+  const part = w / n;
+  const half = Math.min(blend, part * 0.6) / 2;
+  return Array.from({ length: n }, (_, i) => {
+    const left = i > 0 ? half : 0;
+    const right = i < n - 1 ? half : 0;
+    return { x: i * part - left, w: part + left + right, fadeIn: left * 2 };
+  });
+}
 
 export function JointPhotoTool() {
-  const [stored, setSettings] = useStoredState("joint-photo:settings", DEFAULTS, valid);
-  const settings = { ...DEFAULTS, ...stored }; // older saved settings miss the new keys
-  const { people, addFiles, update, lookToAll, remove, move, working } = usePortraits({ max: MAX });
-  const [adjustId, setAdjustId] = useState(null);
-  const [copies, setCopies] = useState(4);
+  const toast = useToast();
+  const [stored, setSettings] = useStoredState("joint-photo:simple", DEFAULTS, valid);
+  const settings = { ...DEFAULTS, ...stored };
   const set = (patch) => setSettings((s) => ({ ...DEFAULTS, ...s, ...patch }));
+  const [people, setPeople] = useState([]);
+  const [selected, setSelected] = useState(0);
+  const [copies, setCopies] = useState(4);
 
-  const size = settings.sizeId === "custom" ? settings.custom : jointSizes.find((s) => s.id === settings.sizeId);
-  const keep = settings.bg === KEEP;
-  const fill = keep ? "#ffffff" : settings.bg;
-  const head = headSizes[settings.head];
-  const ready = people.filter((p) => p.status === "done" || p.manual);
-  const n = Math.max(1, ready.length);
-  // Each person gets a frame this wide; "closeness" squeezes the frames together (they overlap).
-  const slotW = size.w / n;
-  const editKey = `${slotW}x${size.h}`;
-  const baseLook = useMemo(
-    () => ({ ...beautyPresets[settings.beauty]?.look, bgBlur: settings.blur }),
-    [settings.beauty, settings.blur],
-  );
+  const size = SIZES[settings.size];
+  const n = Math.max(2, people.length);
+  const blendMm = (settings.blend / 100) * (size.w / n); // blend % of one person's part
+  const fr = frames(n, size.w, blendMm);
+  // each person's edit is kept per frame shape, so changing size / blend never stretches a photo
+  const shapeKey = (i) => `${settings.size}:${n}:${fr[i].w.toFixed(2)}`;
+  const editOf = (p, i) => p.edits[shapeKey(i)] ?? p.edits.last ?? defaultEdit;
 
-  const lookOf = (p) => ({ ...baseLook, ...p.look });
-  const sourceOf = (p, preview = false) =>
-    p.portrait
-      ? renderPortrait(p.portrait, {
-        keepBackground: keep,
-        fix: p.fix ?? settings.fix,
-        look: lookOf(p),
-        strokes: p.strokes,
-        strokesRev: p.strokesRev,
-        preview,
-      })
-      : p.image.img;
-  const editOf = (p) => p.edits[editKey] ?? (p.portrait ? passportEdit(p.portrait, slotW, size.h, head) : defaultEdit);
+  const addFiles = async (files) => {
+    const room = MAX - people.length;
+    const added = [];
+    for (const f of [...files].slice(0, room)) {
+      try {
+        const image = await loadImage(f);
+        added.push({ id: String(nextId++), name: f.name.replace(/\.[^.]+$/, ""), image, edits: {} });
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    }
+    if (files.length > room) toast(`Up to ${MAX} people.`, "error");
+    if (added.length) {
+      setPeople((l) => [...l, ...added]);
+      setSelected(people.length);
+    }
+  };
+  const setEdit = (i, edit) =>
+    setPeople((l) => l.map((p, j) => (j === i ? { ...p, edits: { ...p.edits, [shapeKey(i)]: edit, last: edit } } : p)));
+  const remove = (i) => {
+    setPeople((l) => l.filter((_, j) => j !== i));
+    setSelected(0);
+  };
+  const swap = () => setPeople((l) => (l.length === 2 ? [l[1], l[0]] : [...l.slice(1), l[0]]));
 
-  /** The whole joint photo at w × h pixels. */
-  const draw = (w, h, preview = false) => {
-    const c = makeCanvas(w, h);
+  /** The joint photo at `k` px per mm. */
+  const draw = (k) => {
+    const c = makeCanvas(size.w * k, size.h * k);
     const ctx = c.getContext("2d");
-    ctx.fillStyle = fill;
+    ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, c.width, c.height);
-    const sw = c.width / n;
-    const close = settings.close / 100;
-    const centres = ready.map((_, i) => c.width / 2 + (i - (n - 1) / 2) * sw * close);
-    const boxOf = (i) => ({ x: centres[i] - sw / 2, y: 0, w: sw, h: c.height });
-    const cutOut = !keep;
-
-    if (cutOut) {
-      // Cut-outs on one colour: they may overlap; hand-cropped photos stay inside their own part.
-      ready.forEach((p, i) => {
-        const box = boxOf(i);
-        ctx.save();
-        if (!p.portrait) {
-          ctx.beginPath();
-          ctx.rect(Math.round(box.x), 0, Math.round(sw), c.height);
-          ctx.clip();
-        }
-        drawEdit(ctx, sourceOf(p, preview), editOf(p), box, p.portrait ? "contain" : "cover");
-        ctx.restore();
-      });
-      return c;
-    }
-
-    // Own backgrounds: each photo fades into the next over a soft join.
-    const fade = Math.max(1, (settings.blend / 100) * sw);
-    const joins = centres.slice(1).map((x, i) => (centres[i] + x) / 2);
-    ready.forEach((p, i) => {
-      const layer = makeCanvas(c.width, c.height);
+    people.forEach((p, i) => {
+      const f = fr[i];
+      const layer = makeCanvas(f.w * k, c.height);
       const lctx = layer.getContext("2d");
-      lctx.fillStyle = "#ffffff";
-      lctx.fillRect(0, 0, c.width, c.height);
-      drawEdit(lctx, sourceOf(p, preview), editOf(p), boxOf(i), p.portrait ? "contain" : "cover");
-      // Left side fades in over the previous photo; the right side is covered by the next photo's fade.
-      const left = i > 0 ? joins[i - 1] - fade / 2 : -Infinity;
-      const right = i < ready.length - 1 ? joins[i] + fade / 2 : Infinity;
-      lctx.globalCompositeOperation = "destination-in";
-      const g = lctx.createLinearGradient(0, 0, c.width, 0);
-      const at = (x) => Math.min(1, Math.max(0, x / c.width));
-      if (Number.isFinite(left)) {
-        g.addColorStop(at(left), "rgba(0,0,0,0)");
-        g.addColorStop(at(left + fade), "rgba(0,0,0,1)");
-      } else g.addColorStop(0, "rgba(0,0,0,1)");
-      if (Number.isFinite(right)) {
-        g.addColorStop(at(right), "rgba(0,0,0,1)");
-        g.addColorStop(Math.min(1, at(right) + 0.0001), "rgba(0,0,0,0)");
-      } else g.addColorStop(1, "rgba(0,0,0,1)");
-      lctx.fillStyle = g;
-      lctx.fillRect(0, 0, c.width, c.height);
-      ctx.drawImage(layer, 0, 0);
-    });
-
-    // Extra blur over each join (hides different backgrounds / lighting).
-    if (settings.seamBlur > 0 && joins.length) {
-      const blurred = softBlur(c, (settings.seamBlur / 100) * sw * 0.08);
-      const band = makeCanvas(c.width, c.height);
-      const bctx = band.getContext("2d");
-      bctx.drawImage(blurred, 0, 0);
-      bctx.globalCompositeOperation = "destination-in";
-      const g = bctx.createLinearGradient(0, 0, c.width, 0);
-      const half = Math.max(2, fade * 0.75);
-      const stops = [];
-      for (const x of joins) stops.push([x - half, 0], [x, 1], [x + half, 0]);
-      stops
-        .map(([x, a]) => [Math.min(1, Math.max(0, x / c.width)), a])
-        .sort((a, b) => a[0] - b[0])
-        .forEach(([x, a]) => g.addColorStop(x, `rgba(0,0,0,${a})`));
-      bctx.fillStyle = g;
-      bctx.fillRect(0, 0, c.width, c.height);
-      // Only the background part of the join (the people stay sharp) — keep their faces out of the blur.
-      ctx.save();
-      ctx.globalAlpha = 0.9;
-      ctx.drawImage(band, 0, 0);
-      ctx.restore();
-      // Put the people back on top, sharp.
-      ready.forEach((p, i) => {
-        if (!p.portrait) return;
-        const person = renderPortrait(p.portrait, {
-          keepBackground: false,
-          fix: p.fix ?? settings.fix,
-          look: lookOf(p),
-          strokes: p.strokes,
-          strokesRev: p.strokesRev,
-          preview,
-        });
-        const layer = makeCanvas(c.width, c.height);
-        const lctx = layer.getContext("2d");
-        drawEdit(lctx, person, editOf(p), boxOf(i), "contain");
+      lctx.imageSmoothingQuality = "high";
+      drawEdit(lctx, p.image.img, editOf(p, i), { x: 0, y: 0, w: layer.width, h: layer.height }, "cover");
+      if (f.fadeIn > 0) {
+        // fade in over the person on the left across the blend area
         lctx.globalCompositeOperation = "destination-in";
-        const g2 = lctx.createLinearGradient(0, 0, c.width, 0);
-        const at = (x) => Math.min(1, Math.max(0, x / c.width));
-        const l = i > 0 ? joins[i - 1] : -Infinity;
-        const r = i < ready.length - 1 ? joins[i] : Infinity;
-        g2.addColorStop(Number.isFinite(l) ? at(l - fade / 2) : 0, "rgba(0,0,0,0)");
-        g2.addColorStop(Number.isFinite(l) ? at(l + fade / 2) : 0, "rgba(0,0,0,1)");
-        g2.addColorStop(Number.isFinite(r) ? at(r - fade / 2) : 1, "rgba(0,0,0,1)");
-        g2.addColorStop(Number.isFinite(r) ? at(r + fade / 2) : 1, Number.isFinite(r) ? "rgba(0,0,0,0)" : "rgba(0,0,0,1)");
-        lctx.fillStyle = g2;
-        lctx.fillRect(0, 0, c.width, c.height);
-        ctx.drawImage(layer, 0, 0);
-      });
-    }
+        const g = lctx.createLinearGradient(0, 0, f.fadeIn * k, 0);
+        g.addColorStop(0, "rgba(0,0,0,0)");
+        g.addColorStop(1, "rgba(0,0,0,1)");
+        lctx.fillStyle = g;
+        lctx.fillRect(0, 0, layer.width, layer.height);
+      }
+      ctx.drawImage(layer, Math.round(f.x * k), 0);
+    });
     return c;
   };
 
-  const lookKey = ready.map((p) => p.id + JSON.stringify([p.edits[editKey], p.look, p.fix, p.strokesRev, p.manual])).join(",");
+  const editsKey = people.map((p, i) => p.id + JSON.stringify(editOf(p, i))).join("|");
   const items = useMemo(
     () =>
-      ready.length
+      people.length >= 2
         ? [
           {
-            key: `joint|${editKey}|${JSON.stringify(settings)}|${lookKey}`,
+            key: `joint|${settings.size}|${settings.blend}|${editsKey}`,
             label: "Joint photo",
-            wMm: size.w,
-            hMm: size.h,
+            wMm: size.turn ? size.h : size.w,
+            hMm: size.turn ? size.w : size.h,
             copies,
             setCopies: (k) => setCopies(Math.min(100, k)),
-            draw: (px) => draw(size.w * px, size.h * px),
+            draw: (k) => {
+              const photo = draw(k);
+              if (!size.turn) return photo;
+              // a quarter turn to the left so it stands in an upright passport space
+              const c = makeCanvas(photo.height, photo.width);
+              const ctx = c.getContext("2d");
+              ctx.translate(0, c.height);
+              ctx.rotate(-Math.PI / 2);
+              ctx.drawImage(photo, 0, 0);
+              return c;
+            },
           },
         ]
         : [],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [lookKey, JSON.stringify(settings), copies, size.w, size.h, ready.length],
+    [editsKey, settings.size, settings.blend, copies, people.length],
   );
 
-  const saveSingle = async () => {
-    downloadBlob(await canvasToBlob(draw(size.w * PX_PER_MM, size.h * PX_PER_MM), "image/jpeg", 0.95), "joint-photo.jpg");
-  };
+  const preview = useMemo(
+    () => (people.length ? draw(8).toDataURL("image/jpeg", 0.9) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [editsKey, settings.size, settings.blend, people.length],
+  );
 
-  const adjusting = people.find((p) => p.id === adjustId && (p.status === "done" || p.manual));
-  useEffect(() => {
-    if (adjustId) document.getElementById("joint-editor")?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [adjustId]);
+  const sel = Math.min(selected, people.length - 1);
+  const current = people[sel];
 
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,420px)] xl:grid-cols-[minmax(0,1fr)_minmax(0,480px)]">
       <div className="min-w-0 space-y-6">
         <Card className="p-5">
-          <Step n={1} title="Size and background">
-            <div className="flex flex-wrap items-end gap-3">
-              <Field label="Size" htmlFor="jp-size" className="min-w-60 flex-1">
-                <Select id="jp-size" value={settings.sizeId} onChange={(e) => set({ sizeId: e.target.value })}>
-                  {jointSizes.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.label}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-              {settings.sizeId === "custom" ? (
-                <>
-                  <Field label="Width (mm)" htmlFor="jp-w" className="w-28">
-                    <NumberInput
-                      id="jp-w"
-                      min={10}
-                      max={300}
-                      value={settings.custom.w}
-                      onChange={(w) => set({ custom: { ...settings.custom, w } })}
-                    />
-                  </Field>
-                  <Field label="Height (mm)" htmlFor="jp-h" className="w-28">
-                    <NumberInput
-                      id="jp-h"
-                      min={10}
-                      max={300}
-                      value={settings.custom.h}
-                      onChange={(h) => set({ custom: { ...settings.custom, h } })}
-                    />
-                  </Field>
-                </>
-              ) : null}
-            </div>
-            <Field label="Background (one colour for everyone, or keep each photo's own and blend them)">
-              <BgPicker value={settings.bg} onChange={(bg) => set({ bg })} id="jp-bg" />
-            </Field>
-            {keep ? (
-              <div className="grid gap-x-5 gap-y-3 rounded-lg bg-ink-50/60 p-3 sm:grid-cols-3">
-                <Slider
-                  label="Soft join"
-                  value={settings.blend}
-                  min={0}
-                  max={80}
-                  defaultValue={30}
-                  unit="%"
-                  onChange={(blend) => set({ blend })}
-                />
-                <Slider
-                  label="Blur in the middle"
-                  value={settings.seamBlur}
-                  min={0}
-                  max={100}
-                  defaultValue={40}
-                  onChange={(seamBlur) => set({ seamBlur })}
-                />
-                <Slider
-                  label="Blur backgrounds"
-                  value={settings.blur}
-                  min={0}
-                  max={100}
-                  defaultValue={0}
-                  onChange={(blur) => set({ blur })}
-                />
-                <p className="text-xs text-muted sm:col-span-3">
-                  The photos fade into each other in the middle, and the join is blurred so it can't be seen. The people stay
-                  sharp.
-                </p>
-              </div>
-            ) : null}
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Head size">
-                <Segmented
-                  size="sm"
-                  options={Object.entries(headSizes).map(([value, h]) => ({ value, label: h.label }))}
-                  value={settings.head}
-                  onChange={(v) => set({ head: v })}
-                />
-              </Field>
-              <Slider
-                label="How close together"
-                value={settings.close}
-                min={55}
-                max={115}
-                onChange={(close) => set({ close })}
-                defaultValue={90}
-                unit="%"
-              />
-              <Field label="Face touch-up (everyone)">
-                <Segmented
-                  size="sm"
-                  options={Object.entries(beautyPresets).map(([value, pr]) => ({ value, label: pr.label }))}
-                  value={settings.beauty}
-                  onChange={(beauty) => set({ beauty })}
-                />
-              </Field>
-              <Checkbox
-                className="self-end pb-1.5"
-                label="Auto brightness and colour"
-                checked={settings.fix}
-                onChange={(e) => set({ fix: e.target.checked })}
-              />
-            </div>
+          <Step n={1} title="Size">
+            <Segmented
+              options={Object.entries(SIZES).map(([value, s]) => ({ value, label: s.label }))}
+              value={settings.size}
+              onChange={(v) => set({ size: v })}
+            />
+            <p className="text-xs text-muted">{size.hint}</p>
           </Step>
         </Card>
 
         <Card className="p-5">
-          <Step n={2} title={`Photos — 2 to ${MAX} people, left to right`}>
-            <CutoutChoice />
+          <Step n={2} title={`Photos — left to right (2 to ${MAX} people)`}>
             {people.length < MAX ? (
               <FileDrop
                 multiple
                 onFiles={addFiles}
-                title={people.length ? "Add another person" : "Drop each person's photo"}
-                hint="One photo per person (separate photos are fine). The faces are lined up to the same size automatically."
+                title={people.length ? "Add another person" : "Choose the photos"}
+                hint="One photo per person. Drag files here, click to browse, or paste with Ctrl+V."
                 compact={people.length > 0}
               />
             ) : null}
             {people.length ? (
-              <ul className="grid gap-3 sm:grid-cols-2">
-                {people.map((p) => (
-                  <PersonCard
+              <div className="flex flex-wrap items-center gap-2">
+                {people.map((p, i) => (
+                  <div
                     key={p.id}
-                    p={p}
-                    active={adjustId === p.id}
-                    onAdjust={() => setAdjustId(p.id)}
-                    onRemove={() => {
-                      remove(p.id);
-                      if (adjustId === p.id) setAdjustId(null);
-                    }}
-                    onRetry={() => update(p.id, { status: "queued", error: "" })}
-                    onManual={() => {
-                      update(p.id, { manual: true, status: "manual", error: "" });
-                      setAdjustId(p.id);
-                    }}
-                    onMove={people.length > 1 ? (dir) => move(p.id, dir) : null}
-                  />
+                    className={cn(
+                      "flex items-center gap-2 rounded-xl border p-1.5 pr-2",
+                      i === sel ? "border-brand-300 bg-brand-50/60" : "border-line bg-white",
+                    )}
+                  >
+                    <button type="button" onClick={() => setSelected(i)} className="flex items-center gap-2 text-left">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={p.image.url} alt="" className="h-10 w-8 rounded object-cover" />
+                      <span className="text-xs font-medium text-ink-900">
+                        {people.length === 2 ? (i === 0 ? "Left" : "Right") : `Person ${i + 1}`}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Remove ${p.name}`}
+                      onClick={() => remove(i)}
+                      className="rounded p-1 text-subtle hover:bg-danger-50 hover:text-danger"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 ))}
-              </ul>
-            ) : null}
-            {ready.length === 1 && !working ? <p className="text-sm text-warn">Add the other person's photo too.</p> : null}
-            {ready.length ? (
-              <p className="text-xs text-muted">
-                Press <strong>Edit</strong> on a photo for its position and head size, light, face touch-up and background.
-              </p>
+                {people.length >= 2 ? (
+                  <Button size="sm" variant="ghost" onClick={swap}>
+                    <ArrowLeftRight className="h-4 w-4" /> Swap
+                  </Button>
+                ) : null}
+              </div>
             ) : null}
           </Step>
         </Card>
 
-        {adjusting ? (
-          <Card className="p-5" id="joint-editor">
-            <PassportEditor
-              key={adjusting.id}
-              p={adjusting}
-              rows={[{ label: "Joint photo", w: slotW, h: size.h, copies: 1 }]}
-              head={head}
-              globalBg={settings.bg}
-              globalFix={settings.fix}
-              baseLook={baseLook}
-              allowOwnBg={false}
-              showCopies={false}
-              onChange={(patch) => update(adjusting.id, patch)}
-              onLookToAll={lookToAll}
-              onClose={() => setAdjustId(null)}
-            />
+        {current ? (
+          <Card className="p-5">
+            <Step
+              n={3}
+              title={`Size and position — ${people.length === 2 ? (sel === 0 ? "left" : "right") : `person ${sel + 1}`}`}
+            >
+              <p className="text-xs text-muted">
+                Drag to move, scroll or use the zoom slider to make the person bigger or smaller, straighten if needed. Do the
+                same for each person so the faces are the same size.
+              </p>
+              <CropEditor
+                key={`${current.id}|${shapeKey(sel)}`}
+                img={current.image.img}
+                edit={editOf(current, sel)}
+                onChange={(e) => setEdit(sel, e)}
+                aspect={fr[sel].w / size.h}
+                guide="face"
+                maxHeight={380}
+              />
+            </Step>
           </Card>
         ) : null}
       </div>
 
       <div className="min-w-0">
         <Card className="space-y-5 p-5 lg:sticky lg:top-6">
-          <Step n={3} title="Copies and print">
+          <Step n={4} title="Joint photo and print">
+            {preview ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={preview} alt="Joint photo" className="w-full rounded border border-line" />
+            ) : null}
+            <Slider
+              label="Blend in the middle"
+              value={settings.blend}
+              min={0}
+              max={60}
+              defaultValue={0}
+              unit="%"
+              onChange={(blend) => set({ blend })}
+            />
+            <p className="-mt-2 text-xs text-subtle">
+              0 = a straight line between the photos. Higher = the photos fade into each other in the middle.
+            </p>
             <div className="flex flex-wrap items-end gap-3">
               <Field label="Copies">
                 <Stepper value={copies} onChange={setCopies} min={1} max={100} label="copies" />
               </Field>
-              <Button variant="outline" onClick={saveSingle} disabled={ready.length < 1}>
+              <Button
+                variant="outline"
+                disabled={people.length < 2}
+                onClick={async () => downloadBlob(await canvasToBlob(draw(PX_PER_MM), "image/jpeg", 0.95), "joint-photo.jpg")}
+              >
                 <Download className="h-4 w-4" /> Save one photo (JPG)
               </Button>
             </div>
@@ -417,33 +271,12 @@ export function JointPhotoTool() {
               items={items}
               fileName="joint-photos"
               showNewRow={false}
-              rememberKey="joint-photo"
-              emptyText="Add the photos to see the page."
+              rememberKey={`joint-${settings.size}`}
+              emptyText="Add two photos to see the page."
             />
           </Step>
         </Card>
       </div>
     </div>
   );
-}
-
-/** Blur a canvas by shrinking and enlarging it (works in every browser, no ctx.filter needed). */
-function softBlur(src, radius) {
-  const k = Math.max(1, radius / 2);
-  const small = makeCanvas(src.width / k, src.height / k);
-  const sctx = small.getContext("2d");
-  sctx.imageSmoothingQuality = "high";
-  sctx.drawImage(src, 0, 0, small.width, small.height);
-  // A second, smaller step makes the blur smoother.
-  const tiny = makeCanvas(small.width / 2, small.height / 2);
-  const tctx = tiny.getContext("2d");
-  tctx.imageSmoothingQuality = "high";
-  tctx.drawImage(small, 0, 0, tiny.width, tiny.height);
-  sctx.clearRect(0, 0, small.width, small.height);
-  sctx.drawImage(tiny, 0, 0, small.width, small.height);
-  const out = makeCanvas(src.width, src.height);
-  const octx = out.getContext("2d");
-  octx.imageSmoothingQuality = "high";
-  octx.drawImage(small, 0, 0, out.width, out.height);
-  return out;
 }

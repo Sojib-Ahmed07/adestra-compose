@@ -33,7 +33,7 @@ export const tools = [
     group: "photo",
     name: "Joint photo",
     bangla: "যৌথ ছবি",
-    description: "Join 2 to 4 people in one photo on one clean background — faces lined up to the same size automatically.",
+    description: "Two (up to 4) people side by side in one photo — original 2.5 × 1.9 in or passport size, with a blend in the middle.",
     icon: "Users",
     keywords: "joint couple two people marriage bank যৌথ",
   },

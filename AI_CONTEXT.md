@@ -7,7 +7,7 @@
 > create or change, list any `npm install` / `db:push` / env changes, and ask for the current contents of any file you need
 > to edit that you haven't been shown. **Never guess what an existing file contains.**
 
-Last updated: **24 Nov 2026 (2)** — Best NID reader (Cloudflare Workers AI, free) + offline double-check. Earlier: NID reader: scan / PDF pages split by white space; label-line junk and খান fixed. 23 Nov: NID reader tested on the owner's real cards; scans / PDF pages with both sides; Tools trimmed (PDF, Bangla typing, calculators, image resize, page arranger, job photo and shop accounts removed); address back to 5 boxes; NID address checked against Bangladesh's places list; order presets in Passport photo sheet.
+Last updated: **24 Nov 2026 (3)** — Joint photo rebuilt simple (2 sizes, blend slider, no effects, no overlap). Earlier today: Best NID reader (Cloudflare Workers AI, free) + offline double-check. Earlier: NID reader: scan / PDF pages split by white space; label-line junk and খান fixed. 23 Nov: NID reader tested on the owner's real cards; scans / PDF pages with both sides; Tools trimmed (PDF, Bangla typing, calculators, image resize, page arranger, job photo and shop accounts removed); address back to 5 boxes; NID address checked against Bangladesh's places list; order presets in Passport photo sheet.
 
 ---
 
@@ -151,7 +151,7 @@ npm run format                    # Prettier (printWidth 130)
     vendor); input short side 512, multiple of 32, RGB scaled to −1…1. `findViaPerson` always uses `{ local: true }`.
     `cloudCutoutReady()` (GET `/api/cutout` → `{ enabled }`, asked once), `getCutoutMode` / `setCutoutMode` (localStorage
     `cutout:mode`, best | offline). `components/photo/cutout-choice.jsx` = the "Background removal: Best (Cloudflare) /
-    Offline" control in Auto passport, Remove background and Joint photo; renders nothing unless the server is set up.
+    Offline" control in Auto passport and Remove background; renders nothing unless the server is set up.
   - **Best cut-out setup (free):** Cloudflare free account → Workers & Pages → Create Worker `shop-cutout` → paste
     `cloudflare/cutout-worker.js` → Deploy; Settings → Bindings → add **Images** named `IMAGES`; Settings → Variables and
     Secrets → Secret `SHOP_KEY` (long random text). Vercel → Settings → Environment Variables: `CUTOUT_URL` = the Worker's
@@ -422,6 +422,13 @@ npm run format                    # Prettier (printWidth 130)
     show/hide, move, delete, rows add/remove/move), Add a section, sticky preview with "Page 2 starts at" + "Text size"
     (saved in `cv.layout`), Print + Save Word. The CV state is
     made after mount (random row ids must not differ from the server render).
+- **Joint photo (24 Nov, simplified):** `components/tools/joint-photo.jsx` is a plain joint maker, no effects. Sizes:
+  **original** 63.5 × 48.26 mm (2.5 × 1.9 in, 3 in a row on A4) and **passport** — made 48.26 × 38.1 landscape and printed a
+  quarter turn left (`turn: true`; sheet item 38.1 × 48.26, `draw` rotates) so it fills an upright passport space, 5 in a row.
+  2–4 people, each owns an equal part of the width — never overlapping. Per person a `CropEditor` (move / zoom / straighten /
+  brightness-contrast-saturation); edits keyed by size + people count + part width. **Blend in the middle** slider 0–60 %
+  (0 = straight line): each part reaches into its neighbour by half the blend and fades in with a `destination-in` gradient.
+  Removed: auto cut-out, background colour, face touch-up, closeness, seam blur. Settings `joint-photo:simple`.
 - **Order presets** (`src/lib/photo/orders.js`, 23 Nov): `orderPresets` (4 passport, 5 passport, 4 passport + 2 stamp,
   3 + 4, 4 + 4, 8, 25, 8 stamp, e-passport, square visa), `sameOrder`, `validOrder` — used by Auto passport and Passport
   photo sheet. Photo sheet: tool-wide order (`photo-sheet:order` in localStorage) applied to every photo; each person
@@ -544,6 +551,7 @@ Schema change → edit `schema.js`, tell the owner to run `npm run db:push`, upd
 
 | Date | Change | Next |
 | --- | --- | --- |
+| 2026-11-24 | **Joint photo rebuilt simple.** Two sizes: **Original 2.5 × 1.9 in** (3 in a row on A4) and **Passport size** (turned, 5 in a row). Each person sits in their own part — no overlap. Size/position per person with the crop editor. One **Blend in the middle** slider (0 = straight line). All extra effects removed (auto cut-out, background, touch-up, closeness, blur). No new packages, no DB change. | Owner tries on real couple photos |
 | 2026-11-24 | **NID box: big card viewer.** After reading, the box fills the screen: the card picture on the left (switch front / back, zoom in up to 5× with buttons, Ctrl+scroll or double-click, drag to move, turn), the boxes on the right, so staff compare each box with the card. Card pictures are kept sharp enough to zoom. Works for photos, scans and PDFs; on phones the picture sits above the boxes. No new packages, no DB change. | — |
 | 2026-11-24 | **Best NID reader (Cloudflare AI, free).** The NID box has "Best (Cloudflare AI) / Offline": Best sends the card pictures to the shop's own Cloudflare Worker, where a vision AI (Llama 4 Scout, then Gemma 3 12B / Mistral Small if needed) reads them; nothing is kept and it isn't used for training. Its answer goes through the same checks (places list, machine-line check digits), then the offline reader reads the same card and each box says whether both readers agree (or shows the other reading with "Use this"). Free ≈ 80–100 cards a day; past that, or if anything fails, the card is read offline. **Setup: Workers AI binding `AI` on the Worker + paste the new Worker code** (no new Vercel env). No new packages, no DB change. | Owner sets up and tests Bangla accuracy on real cards |
 | 2026-11-24 | **NID reader: scanned PDFs fixed.** A scan / PDF page with both sides is now split by the white space between the cards (the old edge finder missed light cards on white paper, so front and back were read as one mixed picture and the name came out empty). Junk specks next to a label ("পিতা পারা") no longer replace the real name; খান is no longer "corrected" to খাতুন; village voted word by word over all readings. The owner's PDF: name, father, mother, NID, house, post, thana, district right; village one letter off (গেডা for গেন্ডা). Phone photos unchanged or better. No new packages, no DB change. | Online reader (owner decides) if village letters must be perfect |
