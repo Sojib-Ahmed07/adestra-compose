@@ -131,9 +131,10 @@ function prepareEven(src, long) {
 }
 
 /** A small picture of what was read (shown next to the results). */
+/** The card picture shown next to the boxes for checking — big enough to zoom in on the small Bangla print. */
 function thumb(src) {
-    const c = toCanvas(src, 640);
-    return c.toDataURL("image/jpeg", 0.7);
+    const c = toCanvas(src, 1800);
+    return c.toDataURL("image/jpeg", 0.85);
 }
 
 /**

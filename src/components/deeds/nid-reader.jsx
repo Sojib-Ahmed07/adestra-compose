@@ -2,7 +2,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { CheckCircle2, ScanLine, X } from "lucide-react";
+import { CheckCircle2, Maximize2, RotateCw, ScanLine, X, ZoomIn, ZoomOut } from "lucide-react";
 import { getNidMode, nidCloudReady, setNidMode } from "@/lib/deeds/nid-mode";
 import { cn } from "@/lib/utils";
 import { BnInput } from "@/components/deeds/bn-input";
@@ -159,7 +159,7 @@ function NidReader({ role, onClose, onFill }) {
             open
             onClose={onClose}
             title={`NID থেকে পূরণ — ${role}`}
-            className="max-w-3xl"
+            className={result ? "max-w-[1500px]!" : "max-w-3xl"}
             footer={
                 result ? (
                     <>
@@ -244,83 +244,80 @@ function NidReader({ role, onClose, onFill }) {
                     ) : null}
                 </div>
             ) : (
-                <div className="space-y-4">
-                    <div className="flex flex-wrap gap-2">
-                        {result.texts.map((t, i) => (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img key={i} src={t.preview} alt={`Card picture ${i + 1} as read`} className="h-24 rounded border border-line" />
-                        ))}
-                    </div>
-                    {result.engine === "cloud" ? (
-                        <p className="text-xs text-muted">
-                            Read by Cloudflare AI{result.model ? ` (${result.model})` : ""}.{" "}
-                            {check?.fields
-                                ? "The offline reader has checked it — see the note under each box."
-                                : check?.failed
-                                    ? "The offline double-check didn't work — check the boxes yourself."
-                                    : `Double-checking on this computer… (${check?.label || "starting"})`}
+                <div className="grid gap-5 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
+                    <CardViewer pictures={result.texts.map((t) => t.preview).filter(Boolean)} />
+                    <div className="min-w-0 space-y-4">
+                        {result.engine === "cloud" ? (
+                            <p className="text-xs text-muted">
+                                Read by Cloudflare AI{result.model ? ` (${result.model})` : ""}.{" "}
+                                {check?.fields
+                                    ? "The offline reader has checked it — see the note under each box."
+                                    : check?.failed
+                                        ? "The offline double-check didn't work — check the boxes yourself."
+                                        : `Double-checking on this computer… (${check?.label || "starting"})`}
+                            </p>
+                        ) : null}
+                        <p className="rounded-lg bg-warn-50 px-3 py-2 text-xs text-warn">
+                            Check every box against the card — the reader can mistake a letter. Untick what you don&apos;t want filled. Empty
+                            boxes were not found; type them yourself.
                         </p>
-                    ) : null}
-                    <p className="rounded-lg bg-warn-50 px-3 py-2 text-xs text-warn">
-                        Check every box against the card — the reader can mistake a letter. Untick what you don&apos;t want filled. Empty
-                        boxes were not found; type them yourself.
-                    </p>
-                    {f.nameEn || f.dob || f.blood ? (
-                        <p className="text-xs text-muted">
-                            Also on the card:{" "}
-                            {[
-                                f.nameEn && `Name: ${f.nameEn}`,
-                                f.dob && `Date of birth: ${f.dob.split("-").reverse().join("/")}`,
-                                f.blood && `Blood: ${f.blood}`,
-                            ]
-                                .filter(Boolean)
-                                .join(" · ")}
-                            {f.nidChecked ? " · NID number confirmed by the machine lines" : ""}
-                        </p>
-                    ) : null}
-                    {f.addressLine ? (
-                        <p className="font-bangla text-xs text-muted">
-                            ঠিকানা (যেমন পড়া গেছে): <span className="text-ink-900">{f.addressLine}</span>
-                            <span className="block font-sans">
-                                District, upazila and post code are checked against Bangladesh&apos;s list of places — a part that could not be
-                                checked is left empty rather than guessed.
-                            </span>
-                        </p>
-                    ) : null}
-                    <div className="grid gap-x-4 gap-y-2 sm:grid-cols-2">
-                        {nidPersonKeys.map((k) => (
-                            <div key={k} className={cn("flex items-start gap-2", WIDE.has(k) && "sm:col-span-2")}>
-                                <input
-                                    type="checkbox"
-                                    className="mt-2.5 h-4 w-4 accent-brand-500"
-                                    checked={!!use[k]}
-                                    onChange={(e) => setUse((u) => ({ ...u, [k]: e.target.checked }))}
-                                    aria-label={`Fill ${LABELS[k]}`}
-                                />
-                                <label className="min-w-0 flex-1 space-y-1">
-                                    <span className="block font-bangla text-xs text-muted">{LABELS[k]}</span>
-                                    <BnInput
-                                        value={values[k] ?? ""}
-                                        english={k === "nid"}
-                                        inputMode={k === "nid" ? "numeric" : undefined}
-                                        onChange={(v) => {
-                                            setValues((x) => ({ ...x, [k]: v }));
-                                            setUse((u) => ({ ...u, [k]: Boolean(v.trim()) }));
-                                        }}
-                                        className={cn(!values[k] && "border-dashed")}
+                        {f.nameEn || f.dob || f.blood ? (
+                            <p className="text-xs text-muted">
+                                Also on the card:{" "}
+                                {[
+                                    f.nameEn && `Name: ${f.nameEn}`,
+                                    f.dob && `Date of birth: ${f.dob.split("-").reverse().join("/")}`,
+                                    f.blood && `Blood: ${f.blood}`,
+                                ]
+                                    .filter(Boolean)
+                                    .join(" · ")}
+                                {f.nidChecked ? " · NID number confirmed by the machine lines" : ""}
+                            </p>
+                        ) : null}
+                        {f.addressLine ? (
+                            <p className="font-bangla text-xs text-muted">
+                                ঠিকানা (যেমন পড়া গেছে): <span className="text-ink-900">{f.addressLine}</span>
+                                <span className="block font-sans">
+                                    District, upazila and post code are checked against Bangladesh&apos;s list of places — a part that could not be
+                                    checked is left empty rather than guessed.
+                                </span>
+                            </p>
+                        ) : null}
+                        <div className="grid gap-x-4 gap-y-2 sm:grid-cols-2">
+                            {nidPersonKeys.map((k) => (
+                                <div key={k} className={cn("flex items-start gap-2", WIDE.has(k) && "sm:col-span-2")}>
+                                    <input
+                                        type="checkbox"
+                                        className="mt-2.5 h-4 w-4 accent-brand-500"
+                                        checked={!!use[k]}
+                                        onChange={(e) => setUse((u) => ({ ...u, [k]: e.target.checked }))}
+                                        aria-label={`Fill ${LABELS[k]}`}
                                     />
-                                    <CheckNote
-                                        cloud={result.engine === "cloud" ? result.fields[k] : undefined}
-                                        other={check?.fields?.[k]}
-                                        done={!!check?.fields}
-                                        onUse={(v) => {
-                                            setValues((x) => ({ ...x, [k]: v }));
-                                            setUse((u) => ({ ...u, [k]: true }));
-                                        }}
-                                    />
-                                </label>
-                            </div>
-                        ))}
+                                    <label className="min-w-0 flex-1 space-y-1">
+                                        <span className="block font-bangla text-xs text-muted">{LABELS[k]}</span>
+                                        <BnInput
+                                            value={values[k] ?? ""}
+                                            english={k === "nid"}
+                                            inputMode={k === "nid" ? "numeric" : undefined}
+                                            onChange={(v) => {
+                                                setValues((x) => ({ ...x, [k]: v }));
+                                                setUse((u) => ({ ...u, [k]: Boolean(v.trim()) }));
+                                            }}
+                                            className={cn(!values[k] && "border-dashed")}
+                                        />
+                                        <CheckNote
+                                            cloud={result.engine === "cloud" ? result.fields[k] : undefined}
+                                            other={check?.fields?.[k]}
+                                            done={!!check?.fields}
+                                            onUse={(v) => {
+                                                setValues((x) => ({ ...x, [k]: v }));
+                                                setUse((u) => ({ ...u, [k]: true }));
+                                            }}
+                                        />
+                                    </label>
+                                </div>
+                            ))}
+                        </div>
                     </div>
                 </div>
             )}
@@ -344,5 +341,131 @@ function CheckNote({ cloud, other, done, onUse }) {
                 Use this
             </button>
         </span>
+    );
+}
+
+/**
+ * The card pictures, big, next to the boxes: pick a side, zoom in (buttons, Ctrl + wheel, double-click), drag to move,
+ * turn a quarter. Stays on screen while the boxes scroll (wide screens).
+ */
+function CardViewer({ pictures }) {
+    const [at, setAt] = useState(0);
+    const [zoom, setZoom] = useState(1);
+    const [turn, setTurn] = useState(0);
+    const box = useRef(null);
+    const drag = useRef(null);
+    const src = pictures[Math.min(at, pictures.length - 1)];
+    if (!src) return null;
+
+    const zoomTo = (z, cx = 0.5, cy = 0.5) => {
+        const el = box.current;
+        const next = Math.min(5, Math.max(1, Math.round(z * 4) / 4));
+        if (!el || next === zoom) return setZoom(next);
+        // keep the point under the pointer (or the middle) in place
+        const px = (el.scrollLeft + el.clientWidth * cx) / el.scrollWidth;
+        const py = (el.scrollTop + el.clientHeight * cy) / el.scrollHeight;
+        setZoom(next);
+        requestAnimationFrame(() => {
+            el.scrollLeft = px * el.scrollWidth - el.clientWidth * cx;
+            el.scrollTop = py * el.scrollHeight - el.clientHeight * cy;
+        });
+    };
+    const side = turn % 2 === 1;
+
+    return (
+        <div className="min-w-0 space-y-2 lg:sticky lg:top-0 lg:self-start">
+            <div className="flex flex-wrap items-center gap-1.5">
+                {pictures.length > 1
+                    ? pictures.map((p, i) => (
+                        <button
+                            key={i}
+                            type="button"
+                            onClick={() => {
+                                setAt(i);
+                                setZoom(1);
+                                setTurn(0);
+                            }}
+                            className={cn(
+                                "overflow-hidden rounded-md border-2",
+                                i === at ? "border-brand-500" : "border-transparent opacity-70 hover:opacity-100",
+                            )}
+                            aria-label={`Show card picture ${i + 1}`}
+                        >
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={p} alt="" className="h-12 w-auto" />
+                        </button>
+                    ))
+                    : null}
+                <span className="ml-auto flex items-center gap-1">
+                    <Button size="icon" variant="ghost" onClick={() => zoomTo(zoom - 0.5)} disabled={zoom <= 1} aria-label="Zoom out">
+                        <ZoomOut className="h-4 w-4" />
+                    </Button>
+                    <span className="w-11 text-center text-xs tabular-nums text-muted">{Math.round(zoom * 100)}%</span>
+                    <Button size="icon" variant="ghost" onClick={() => zoomTo(zoom + 0.5)} disabled={zoom >= 5} aria-label="Zoom in">
+                        <ZoomIn className="h-4 w-4" />
+                    </Button>
+                    <Button size="icon" variant="ghost" onClick={() => setZoom(1)} aria-label="Whole card" title="Whole card">
+                        <Maximize2 className="h-4 w-4" />
+                    </Button>
+                    <Button size="icon" variant="ghost" onClick={() => setTurn((t) => (t + 1) % 4)} aria-label="Turn" title="Turn">
+                        <RotateCw className="h-4 w-4" />
+                    </Button>
+                </span>
+            </div>
+            <div
+                ref={box}
+                className={cn(
+                    "relative h-[52vh] overflow-auto rounded-xl border border-line bg-ink-50 lg:h-[calc(100vh-18rem)]",
+                    zoom > 1 ? "cursor-grab active:cursor-grabbing" : "cursor-zoom-in",
+                )}
+                onWheel={(e) => {
+                    if (!e.ctrlKey) return;
+                    e.preventDefault();
+                    const r = e.currentTarget.getBoundingClientRect();
+                    zoomTo(zoom * (e.deltaY < 0 ? 1.25 : 0.8), (e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
+                }}
+                onDoubleClick={(e) => {
+                    const r = e.currentTarget.getBoundingClientRect();
+                    zoomTo(zoom > 1 ? 1 : 2.5, (e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
+                }}
+                onPointerDown={(e) => {
+                    if (zoom <= 1 || e.button !== 0) return;
+                    drag.current = { x: e.clientX, y: e.clientY, l: box.current.scrollLeft, t: box.current.scrollTop };
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                }}
+                onPointerMove={(e) => {
+                    const d = drag.current;
+                    if (!d) return;
+                    box.current.scrollLeft = d.l - (e.clientX - d.x);
+                    box.current.scrollTop = d.t - (e.clientY - d.y);
+                }}
+                onPointerUp={() => (drag.current = null)}
+                onPointerCancel={() => (drag.current = null)}
+            >
+                <div
+                    className="flex min-h-full items-center justify-center p-2"
+                    style={{ width: `${zoom * 100}%`, height: zoom > 1 ? `${zoom * 100}%` : undefined }}
+                >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                        src={src}
+                        alt={`Card picture ${at + 1} as read`}
+                        draggable={false}
+                        className="select-none rounded shadow-sm"
+                        style={{
+                            transform: `rotate(${turn * 90}deg)`,
+                            maxWidth: side ? `${zoom * 100}%` : "100%",
+                            maxHeight: side ? "100%" : "100%",
+                            width: side ? "auto" : "100%",
+                            height: side ? "100%" : "auto",
+                            objectFit: "contain",
+                        }}
+                    />
+                </div>
+            </div>
+            <p className="text-[11px] text-subtle">
+                Double-click or Ctrl + scroll to zoom in on a spot · drag to move · compare each box with the card.
+            </p>
+        </div>
     );
 }
