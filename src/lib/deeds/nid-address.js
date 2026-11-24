@@ -467,7 +467,7 @@ export function readAddress(raw) {
     const out = { sure, score: r.score };
     if (upCode) out.upCode = upCode;
     if (r.house) {
-        const h = tidy(r.house, true);
+        const h = tidy(r.house, true).replace(/\s*-\s*/g, "-");
         if (h && h !== "-") out.house = h;
     }
     if (r.village) {
@@ -546,7 +546,7 @@ export function mergeAddress(raws) {
     // best score wins (ties: more agreed words). "চর ৯৮০৪১…" or "দ্র ২২ শ্গাত্মুর" lose to "লঙ্গারচর চর আলগী".
     // (several readings and none agree → left empty: a jumble is worse than an empty box; one reading → used as read)
     const villages = same.map((r) => r.village).filter(Boolean);
-    out.village = agreed(villages) || (villages.length <= 2 ? middle(villages) : "");
+    out.village = wordByWord(villages) || agreed(villages) || (villages.length <= 2 ? middle(villages) : "");
     out.house = middle(same.map((r) => r.house));
     // post office: a code checked against the district wins; the name is voted when it is a known place, else the middle
     const codes = same.filter((r) => r.code);
@@ -592,6 +592,45 @@ function commonEnd(names) {
         }
     });
     return best ? best.text : "";
+}
+
+/**
+ * Free text read 3+ times with the same number of words: each word is chosen on its own — the version closest to the
+ * other readings' word in that place ("গেসন্ডা / গেডা / গেডা / গেষন্ডা" → "গেডা"; "গ্রন্দা / গেন্দা / গেন্দা" → "গেন্দা").
+ * Each reading gets different letters wrong, so this is better than taking any one reading whole.
+ */
+function wordByWord(vals) {
+    const split = (v) => v.split(/\s*,\s*|\s+/).filter(Boolean);
+    const groups = new Map();
+    for (const v of vals) {
+        const n = split(v).length;
+        groups.set(n, [...(groups.get(n) || []), v]);
+    }
+    const [n, list] = [...groups.entries()].sort((a, b) => b[1].length - a[1].length || b[0] - a[0])[0] || [0, []];
+    if (list.length < 3 || n === 0) return "";
+    const rows = list.map(split);
+    const commas = split(list[0]).map((_, i) => {
+        // keep the commas where most readings have them
+        const withComma = list.filter((v) => {
+            const parts = v.split(/\s+/);
+            return /,$/.test(parts[i] || "");
+        }).length;
+        return withComma * 2 > list.length;
+    });
+    const words = [];
+    for (let i = 0; i < n; i++) {
+        const options = rows.map((r) => r[i]);
+        let best = options[0];
+        let bestD = Infinity;
+        for (const o of options) {
+            if (!wordOk(o) && !/^[০-৯/\-]+$/.test(o)) continue;
+            const t = options.reduce((sum, x) => sum + distance(key(o), key(x)), 0);
+            if (t < bestD) [best, bestD] = [o, t];
+        }
+        if (bestD === Infinity) return "";
+        words.push(best + (commas[i] && i < n - 1 ? "," : ""));
+    }
+    return words.join(" ");
 }
 
 /** Free text read several times → the reading whose words the other readings agree with most. */

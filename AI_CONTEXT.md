@@ -7,7 +7,7 @@
 > create or change, list any `npm install` / `db:push` / env changes, and ask for the current contents of any file you need
 > to edit that you haven't been shown. **Never guess what an existing file contains.**
 
-Last updated: **23 Nov 2026 (2)** — NID reader tested on the owner's real cards; scans / PDF pages with both sides. Earlier today: Tools trimmed (PDF, Bangla typing, calculators, image resize, page arranger, job photo and shop accounts removed); address back to 5 boxes; NID address checked against Bangladesh's places list; order presets in Passport photo sheet.
+Last updated: **24 Nov 2026 (2)** — Best NID reader (Cloudflare Workers AI, free) + offline double-check. Earlier: NID reader: scan / PDF pages split by white space; label-line junk and খান fixed. 23 Nov: NID reader tested on the owner's real cards; scans / PDF pages with both sides; Tools trimmed (PDF, Bangla typing, calculators, image resize, page arranger, job photo and shop accounts removed); address back to 5 boxes; NID address checked against Bangladesh's places list; order presets in Passport photo sheet.
 
 ---
 
@@ -21,7 +21,7 @@ Last updated: **23 Nov 2026 (2)** — NID reader tested on the owner's real card
 | Inspiration | Feature set of sohozkaj.com and alltoolsbd.netlify.app (see §10). Build our own versions — never copy their text, template artwork or branding. |
 | Language | **JavaScript only** (`.js` / `.jsx`). No TypeScript files, no type annotations (JSDoc is fine). |
 | Stack | Next.js **16.4.6 (pinned)** (App Router, Turbopack) · React **19.3** · Tailwind CSS **4.3.4 (pinned, via `@tailwindcss/postcss`)** · lucide-react · zod **v4** · Better Auth **1.7** · Drizzle ORM + `pg` · Neon Postgres · pdf-lib (sheet PDFs) · fflate (ZIP, also builds the CV .docx) · @fontsource/poppins **5.3.0** (CV font) · avro-phonetic · tesseract.js **7** (NID reader) · onnxruntime-web (WASM) + MODNet model · MediaPipe Face Mesh (legacy) |
-| Privacy | Customer photos and documents are processed in the browser with `<canvas>`. **One exception (owner's decision, 18 Nov 2026):** the optional "Best" background removal sends the photo to the shop's own Cloudflare Worker (see §4 "Best cut-out"); "Offline" sends nothing. The database holds logins and settings. (The shop-accounts tables are still in the schema but nothing uses them since 23 Nov — kept so no data is lost.) |
+| Privacy | Customer photos and documents are processed in the browser with `<canvas>`. **One exception (owner's decision, 18 Nov 2026):** the optional "Best" background removal sends the photo to the shop's own Cloudflare Worker (see §4 "Best cut-out"); "Offline" sends nothing. **Second exception (owner's decision, 24 Nov 2026):** the optional "Best (Cloudflare AI)" NID reader sends the card pictures to the same Worker (Workers AI: zero data retention, not used for training, also on the free plan); "Offline" sends nothing. Gemini's free tier was rejected for NIDs (Google may keep / human-review free-tier input; its terms forbid personal data there). The database holds logins and settings. (The shop-accounts tables are still in the schema but nothing uses them since 23 Nov — kept so no data is lost.) |
 | UI language | English labels with Bangla tool names/subtitles. Bangla text uses Noto Sans Bengali. |
 | Owner's machine | Windows, PowerShell. Node 20.9+. See §4 "Native files on Windows". |
 
@@ -344,6 +344,36 @@ npm run format                    # Prettier (printWidth 130)
     thana only as a fallback; পৌরসভা / সিটি কর্পোরেশন not put in থানা; village = `agreed()` (words other readings share),
     empty when 3+ readings and none agree; post office name = `commonEnd()` (the ending half the readings share); readings
     with no label, code or district are ignored. Bangla-digit length check fixed (`\D` also matched Bangla digits).
+  - **NID reader, 24 Nov (owner's scanned PDF `id-card.pdf`: A4, front above back, clean scan):** the page used to be read
+    as one picture (the light cards have almost no edge on white paper, so `findTwoCards` missed them) and the front's
+    label lines carried card-pattern specks ("পিতা পারা Bn"). Now: `scanPieces(img)` runs first in `cardsIn` — only for
+    paper-shaped pictures (long / short 1.2–1.75; a phone screenshot is ~2.2) whose outer 3% is blank paper; rows / columns
+    with print, split at white gaps → exactly 2 card-like blocks (1.3–1.95 : 1, similar size) → cropped pieces. Then a card
+    shape covering > 25% of a photo is taken as the one card (before `findTwoCards`, which cut phone photos into fake
+    cards). Parser: `value()` takes the line below when the label line's rest is junk (Latin / digits / one word) and the
+    line below is a fuller Bangla line; `isFront` no longer requires the back's words to be absent (a page with both
+    sides); NAME_WORDS + খান, খন্দকার, পাটোয়ারী, হাওলাদার, মজুমদার, বেপারী (খান was being "corrected" to খাতুন); village =
+    `wordByWord()` (3+ readings with the same word count → each word voted on its own) before `agreed()`; house "ডি - ১" →
+    "ডি-১". The PDF now reads every box right except গেন্ডা → গেডা (the OCR drops the ন্ in that conjunct). Test set 13
+    cases: 69 right, 13 empty, 8 wrong (letter slips); faded pink photos still read almost nothing.
+  - **Best NID reader (24 Nov, Cloudflare Workers AI, free):** `cloudflare/cutout-worker.js` now also has `POST /nid`
+    (JSON `{ images: [data URLs, 1–4] }`, header `x-shop-key`) → `env.AI.run(model, { messages: [{ role: "user", content:
+    [text prompt, …{ type: "image_url", image_url: { url } }] }], max_tokens: 1200, temperature: 0 })`, models tried in
+    order `@cf/meta/llama-4-scout-17b-16e-instruct` → `@cf/google/gemma-3-12b-it` → `@cf/mistralai/mistral-small-3.1-24b-instruct`
+    (Kimi K2.6 is not on the Workers Free plan); the answer's JSON is pulled out of `response` / `choices[0].message.content`
+    (```json fences ok) → `{ model, data: { name, nameEn, father, mother, husband, dob, nid, address, blood, mrz } }`;
+    quota errors (4006 / neurons) → 429 "used up (starts again at 6 am)". Needs the **Workers AI binding named `AI`**.
+    Free = 10,000 Neurons/day (≈ 80–100 cards with Llama 4 Scout, estimated). `src/app/api/nid-read/route.js` (GET
+    `{ enabled }`, POST forwards to `${CUTOUT_URL}/nid` with `CUTOUT_KEY`; same env as the cut-out; ≤ 4 MB). Client:
+    `lib/deeds/nid-mode.js` (`nidCloudReady`, `getNidMode` / `setNidMode`, localStorage `nid:mode`, best by default) and
+    `readNidCloud(files, onProgress)` in nid.js (cards found / PDF pages split exactly like the offline reader → ≤ 4 JPEGs
+    1600 px q0.86 → `cloudFields`: names Bangla-only + `fixName`, NID 10/13/17 digits, MRZ check digits win (`nidChecked`),
+    address → `mergeAddress` (5 boxes, places list)). NID box: "Best (Cloudflare AI) / Offline" switch (only when set up);
+    a cloud failure → toast + offline reader; after a cloud reading the offline reader reads the same card in the background
+    and each box shows `CheckNote`: "✓ Both readers read the same" / "Readers differ — offline read: … [Use this]" / "Only the
+    AI read this". Tested end to end with the real Worker code and a stand-in for Workers AI (routing, key, JSON in a
+    fence, PDF → 2 pictures, model fallback, daily-limit fallback); **not yet tested against real Workers AI or on how well
+    the models read Bangla** — owner tests after setup.
   - `components/tools/deed-writer.jsx` — template cards, people (each party; "NID থেকে পূরণ"; জামিনদার add / remove; "আগের মানুষ থেকে পূরণ" from `deed:people`, the
     last 80 people saved when printing), details, সাক্ষী card (count, optional name / address, fill from a saved person), wording/conditions editor, page settings (per template, `deed:page:<id>`),
     draft per template (`deed:draft:<id>`), Print (waits 350 ms so the last Banglish word converts).
@@ -432,6 +462,7 @@ src/
     layout.jsx  globals.css  not-found.jsx  favicon.ico
     login/page.jsx                 shop name + LoginForm
     api/cutout/route.js            GET { enabled } · POST photo → Cloudflare Worker → PNG (login required, CUTOUT_URL/KEY)
+    api/nid-read/route.js          GET { enabled } · POST { images } → Cloudflare Worker /nid → { model, data } (same env)
     api/auth/[...all]/route.js     Better Auth      api/health/route.js → { ok, db }
     (app)/layout.jsx               requireUser + AppShell + ToastProvider
     (app)/page.jsx                 tool hub (search)
@@ -449,7 +480,7 @@ src/
     tools/     one client component per tool (same names as the slugs)
   lib/         tools.js (registry: groups + tools), utils.js, number-words.js, zip.js, use-stored.js,
                photo/ (sizes, orders, image, sheet, export, signature, card, enhance, adjust, ai/ (faces, matte, portrait, tone, retouch, look)),
-               bangla/ (avro), deeds/ (format, templates, nid, nid-parse, nid-address, bd-places), cv/ (model, html, docx)
+               bangla/ (avro), deeds/ (format, templates, nid, nid-mode, nid-parse, nid-address, bd-places), cv/ (model, html, docx)
   db/          schema.js, index.js, url.js, add-user.js (`npm run user:add`)
   server/      auth.js, session.js (getCurrentUser, requireUser, requireOwner, getOwner, safeNext), errors.js,
                queries/settings.js (getShop, getTeam), actions/auth.js (signIn, signOut),
@@ -460,7 +491,8 @@ scripts/copy-vendor.mjs   copies tesseract (worker, 3 core files, ben/eng data),
                           onnxruntime-web (ort.wasm.min.mjs + simd-threaded .mjs/.wasm), models/modnet.onnx (+ NOTICE) and
                           @mediapipe/face_mesh into public/vendor (postinstall / predev / prebuild; `npm run vendor`). ~80 MB.
 public/workers/matte.js   background-removal worker (committed)
-cloudflare/cutout-worker.js  the Cloudflare Worker for the Best cut-out (pasted into Cloudflare's dashboard, not run by Next)
+cloudflare/cutout-worker.js  the Cloudflare Worker for the Best cut-out (POST /) and the Best NID reader (POST /nid) — pasted
+                          into Cloudflare's dashboard, not run by Next; bindings IMAGES + AI, secret SHOP_KEY
 ```
 
 To add a tool: build `components/tools/<slug>.jsx` + `app/(app)/tools/<slug>/page.jsx`, then add it to `lib/tools.js`
@@ -507,6 +539,8 @@ Schema change → edit `schema.js`, tell the owner to run `npm run db:push`, upd
 
 | Date | Change | Next |
 | --- | --- | --- |
+| 2026-11-24 | **Best NID reader (Cloudflare AI, free).** The NID box has "Best (Cloudflare AI) / Offline": Best sends the card pictures to the shop's own Cloudflare Worker, where a vision AI (Llama 4 Scout, then Gemma 3 12B / Mistral Small if needed) reads them; nothing is kept and it isn't used for training. Its answer goes through the same checks (places list, machine-line check digits), then the offline reader reads the same card and each box says whether both readers agree (or shows the other reading with "Use this"). Free ≈ 80–100 cards a day; past that, or if anything fails, the card is read offline. **Setup: Workers AI binding `AI` on the Worker + paste the new Worker code** (no new Vercel env). No new packages, no DB change. | Owner sets up and tests Bangla accuracy on real cards |
+| 2026-11-24 | **NID reader: scanned PDFs fixed.** A scan / PDF page with both sides is now split by the white space between the cards (the old edge finder missed light cards on white paper, so front and back were read as one mixed picture and the name came out empty). Junk specks next to a label ("পিতা পারা") no longer replace the real name; খান is no longer "corrected" to খাতুন; village voted word by word over all readings. The owner's PDF: name, father, mother, NID, house, post, thana, district right; village one letter off (গেডা for গেন্ডা). Phone photos unchanged or better. No new packages, no DB change. | Online reader (owner decides) if village letters must be perfect |
 | 2026-11-23 | **NID reader tuned on the owner's real cards + scans / PDF.** গ্রাম no longer filled with barcode digits; label bits (নং, হো পয, গম) no longer end up in the boxes; holding numbers no longer taken as the post code; a wrong code can no longer change the thana. One scan / photocopy / **PDF page with both sides** is now read (each side found and read). Faded, tinted or sideways photos get a second try with the light evened out. Tested on 7 real cards + 3 scan pages: names, parents, NID right on all readable cards; full address right on clear photos, scans and the PDF; very faded pink photos still need a clearer photo. **Package back: pdfjs-dist** (for PDFs). No DB change. | More real cards if some still read badly |
 | 2026-11-23 | **Trimmed + deed address + NID address + photo sheet orders.** Removed (owner's choice): Page arranger, Job photo & signature, all 8 PDF tools, Banglish typing / Bijoy ↔ Unicode / Image to text pages, Resize & compress, Age calculator, Amount in words, and the whole Shop accounts section (pages, receipts, print pages, actions, queries). The deed writer's Banglish typing, the NID reader and Bangla numbers still work (their engines stay). DB tables for accounts are left in the schema (no data dropped, no `db:push` needed). Deed writer: address is **5 boxes again** (বাসা/হোল্ডিং, গ্রাম/রাস্তা, ডাকঘর, থানা/উপজেলা, জেলা); 20–23 Nov drafts / saved people split back automatically. NID থেকে পূরণ fills the 5 boxes; the address is checked against Bangladesh's districts, upazilas / city thanas, unions and post codes, read in 6 image versions and voted — tested on made-up cards incl. a heavily blurred one (all parts right). Passport photo sheet: one-tap orders (5 passport, 4 passport + 2 stamp, …), several sizes per person, per-person copies. Packages removed: pdfjs-dist, @neslinesli93/qpdf-wasm, bijoy-unicode-converter, bijoy2unicode. No DB change. | Real NID photos from the shop to fine-tune |
 | 2026-11-20 | **NID reader: fewer English-letter mix-ups.** Bangla lines and the address are now read by a Bangla-only reader; jumbled misread words, stray bits at the end and quote marks are removed; missing ":" after labels put back; names keep their last word (… নাগর মিয়া) and lose stray bits; date of birth from the smart card's machine lines is trusted (fixed 1983 → 1988). Tested on 3 cards: names, parents, NID right on all; smart-card address mostly right; old laminated card's 2nd address line and faded addresses still read poorly. No new packages, no DB change. | Online reader (Gemini) for addresses if the owner wants them near-perfect |

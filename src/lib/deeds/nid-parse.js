@@ -95,6 +95,12 @@ const NAME_WORDS = [
     "আবু",
     "বেগম",
     "খাতুন",
+    "খান",
+    "খন্দকার",
+    "পাটোয়ারী",
+    "হাওলাদার",
+    "মজুমদার",
+    "বেপারী",
     "আক্তার",
     "আখতার",
     "আক্তারুজ্জামান",
@@ -286,7 +292,19 @@ export function parseNid(text, mrz = "") {
     const value = (i, re) => {
         const rest = lines[i].replace(re, "").trim();
         const okVal = (v) => v.length > 2 && !isLabelWord(v) && v.split(" ").length <= 6;
-        if (bnShare(rest) > 0.5 && okVal(cleanBn(rest))) return cleanBn(rest);
+        // smart card: the label line may carry specks of the card pattern read as letters ("পিতা পারা Bn") — when the line
+        // below is a fuller Bangla line, that is the value
+        const below = lines[i + 1] || "";
+        const belowOk =
+            bnShare(below) > 0.6 &&
+            !HEADER.test(below) &&
+            !Object.values(LABEL).some((r) => r.test(below)) &&
+            okVal(cleanBn(below)) &&
+            cleanBn(below).split(" ").length >= 2;
+        const restClean = cleanBn(rest);
+        const junky = /[A-Za-z0-9$'%]/.test(rest) || restClean.split(" ").length < 2;
+        if (belowOk && junky) return cleanBn(below);
+        if (bnShare(rest) > 0.5 && okVal(restClean)) return restClean;
         // smart card: the label is on its own line, the value below
         for (let j = i + 1; j < Math.min(lines.length, i + 3); j++) {
             if (Object.values(LABEL).some((r) => r.test(lines[j]))) break;
@@ -308,7 +326,8 @@ export function parseNid(text, mrz = "") {
         }
     });
     // English name (helps to find the Bangla lines around it, and is shown to the staff)
-    const isFront = /Birth|পিতা|মাতা|Name|গণপ্রজাতন্ত্রী|National ID|জাতীয় পরিচয়/i.test(text) && !/<{3,}|ঠিকানা/.test(text);
+    // the front's words (a page with both sides has the back's too — still a front)
+    const isFront = /Birth|পিতা|মাতা|Name|গণপ্রজাতন্ত্রী|National ID|জাতীয় পরিচয়/i.test(text);
     let enAt = -1;
     let enScore = 0;
     lines.forEach((l, i) => {

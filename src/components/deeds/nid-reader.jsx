@@ -3,11 +3,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, ScanLine, X } from "lucide-react";
+import { getNidMode, nidCloudReady, setNidMode } from "@/lib/deeds/nid-mode";
 import { cn } from "@/lib/utils";
 import { BnInput } from "@/components/deeds/bn-input";
 import { Button } from "@/components/ui/button";
 import { FileDrop } from "@/components/ui/file-drop";
-import { Modal, useToast } from "@/components/ui/interactive";
+import { Modal, Segmented, useToast } from "@/components/ui/interactive";
 
 // the same keys as nidPersonKeys in lib/deeds/nid-parse.js (kept here so the reader and its places list load only
 // when the box is used)
@@ -26,9 +27,22 @@ const LABELS = {
 const nidPersonKeys = Object.keys(LABELS);
 const WIDE = new Set(["name", "village"]);
 
+/** Same text? (spaces, invisible joiners and the two ways of writing য় / ড় don't count) */
+const same = (a, b) => {
+    const n = (v) =>
+        String(v || "")
+            .normalize("NFC")
+            .replace(/\u09AF\u09BC/g, "\u09DF")
+            .replace(/\u09A1\u09BC/g, "\u09DC")
+            .replace(/[\s\u200C\u200D.,:]/g, "");
+    return n(a) === n(b);
+};
+
 /**
- * "NID থেকে পূরণ": photos of the NID (front, back, or a photocopy page with both) → the person's details, read in this
- * browser (nothing is uploaded). The staff checks / corrects every box, then fills the person.
+ * "NID থেকে পূরণ": photos of the NID (front, back, or a photocopy page with both) → the person's details. Two readers:
+ * Best = Cloudflare Workers AI (the card pictures go to the shop's own Worker, nothing is kept) — then the offline
+ * reader reads the same card in the background and each box shows whether both readers agree; Offline = read in this
+ * browser only. The staff checks / corrects every box, then fills the person.
  * @param {{ role: string, onFill: (patch: object) => void }} props
  */
 export function NidReaderButton({ role, onFill }) {
@@ -50,7 +64,15 @@ function NidReader({ role, onClose, onFill }) {
     const [result, setResult] = useState(null); // { fields, texts }
     const [values, setValues] = useState({});
     const [use, setUse] = useState({});
+    const [mode, setMode] = useState("offline");
+    const [cloudOk, setCloudOk] = useState(false);
+    const [check, setCheck] = useState(null); // offline double-check of a cloud reading: { label } while running, { fields } when done
     const alive = useRef(true);
+
+    useEffect(() => {
+        setMode(getNidMode());
+        nidCloudReady().then((ok) => alive.current && setCloudOk(ok));
+    }, []);
 
     useEffect(() => {
         alive.current = true;
@@ -62,26 +84,56 @@ function NidReader({ role, onClose, onFill }) {
 
     const add = (list) => setFiles((f) => [...f, ...list].slice(0, 3));
 
+    const show = (r) => {
+        if (globalThis.__nidDebug) globalThis.__nidLast = r; // for testing from the browser console
+        setResult(r);
+        const v = {};
+        const u = {};
+        for (const k of nidPersonKeys) {
+            v[k] = r.fields[k] || "";
+            u[k] = Boolean(r.fields[k]);
+        }
+        setValues(v);
+        setUse(u);
+    };
+
+    const readOffline = async (mod) => {
+        const r = await mod.readNid(files, (label, done) => alive.current && setBusy({ label, done }));
+        if (!alive.current) return;
+        show(r);
+        if (!r.found.some((k) => nidPersonKeys.includes(k)))
+            toast("Nothing could be read. Take the photo again: flat, in good light, card filling most of the photo.", "error");
+    };
+
     const read = async () => {
         if (!files.length) return;
         setBusy({ label: "Starting the reader", done: 0 });
         setResult(null);
+        setCheck(null);
         try {
-            const { readNid } = await import("@/lib/deeds/nid");
-            const r = await readNid(files, (label, done) => alive.current && setBusy({ label, done }));
-            if (!alive.current) return;
-            if (globalThis.__nidDebug) globalThis.__nidLast = r; // for testing from the browser console
-            setResult(r);
-            const v = {};
-            const u = {};
-            for (const k of nidPersonKeys) {
-                v[k] = r.fields[k] || "";
-                u[k] = Boolean(r.fields[k]);
+            const mod = await import("@/lib/deeds/nid");
+            if (mode === "best" && cloudOk) {
+                let r = null;
+                try {
+                    r = await mod.readNidCloud(files, (label, done) => alive.current && setBusy({ label, done }));
+                } catch (err) {
+                    const why = (err?.name === "TimeoutError" ? "it took too long" : err?.message || "unknown error").replace(/\.+$/, "");
+                    toast(`Cloudflare AI didn't work — ${why}. Reading offline instead.`, "error");
+                }
+                if (!alive.current) return;
+                if (r) {
+                    show(r);
+                    setBusy(null);
+                    // the offline reader reads the same card in the background: each box then shows whether both agree
+                    setCheck({ label: "Starting" });
+                    mod
+                        .readNid(files, (label) => alive.current && setCheck((c) => (c?.fields ? c : { label })))
+                        .then((o) => alive.current && setCheck({ fields: o.fields }))
+                        .catch(() => alive.current && setCheck({ failed: true }));
+                    return;
+                }
             }
-            setValues(v);
-            setUse(u);
-            if (!r.found.some((k) => nidPersonKeys.includes(k)))
-                toast("Nothing could be read. Take the photo again: flat, in good light, card filling most of the photo.", "error");
+            await readOffline(mod);
         } catch (err) {
             toast(`Could not read the card: ${err.message}`, "error");
         } finally {
@@ -129,9 +181,31 @@ function NidReader({ role, onClose, onFill }) {
                 <div className="space-y-3">
                     <p className="text-sm text-muted">
                         Add the <strong>front</strong> and the <strong>back</strong> of the NID (two photos), or{" "}
-                        <strong>one scan / photocopy / PDF page with both sides</strong>. Smart card or old card, any way up. The card is read
-                        on this computer — nothing is sent anywhere or kept.
+                        <strong>one scan / photocopy / PDF page with both sides</strong>. Smart card or old card, any way up.
                     </p>
+                    {cloudOk ? (
+                        <div className="space-y-1">
+                            <Segmented
+                                size="sm"
+                                options={[
+                                    { value: "best", label: "Best (Cloudflare AI)" },
+                                    { value: "offline", label: "Offline" },
+                                ]}
+                                value={mode}
+                                onChange={(m) => {
+                                    setNidMode(m);
+                                    setMode(m);
+                                }}
+                            />
+                            <p className="text-xs text-subtle">
+                                {mode === "best"
+                                    ? "Best: the card pictures are sent to the shop's Cloudflare account and read by an AI (nothing is kept there); then this computer double-checks it. Free for about 80–100 cards a day; if it fails, the card is read offline."
+                                    : "Offline: read on this computer, nothing is sent anywhere."}
+                            </p>
+                        </div>
+                    ) : (
+                        <p className="text-xs text-subtle">The card is read on this computer — nothing is sent anywhere or kept.</p>
+                    )}
                     {files.length < 3 ? (
                         <FileDrop
                             onFiles={add}
@@ -177,6 +251,16 @@ function NidReader({ role, onClose, onFill }) {
                             <img key={i} src={t.preview} alt={`Card picture ${i + 1} as read`} className="h-24 rounded border border-line" />
                         ))}
                     </div>
+                    {result.engine === "cloud" ? (
+                        <p className="text-xs text-muted">
+                            Read by Cloudflare AI{result.model ? ` (${result.model})` : ""}.{" "}
+                            {check?.fields
+                                ? "The offline reader has checked it — see the note under each box."
+                                : check?.failed
+                                    ? "The offline double-check didn't work — check the boxes yourself."
+                                    : `Double-checking on this computer… (${check?.label || "starting"})`}
+                        </p>
+                    ) : null}
                     <p className="rounded-lg bg-warn-50 px-3 py-2 text-xs text-warn">
                         Check every box against the card — the reader can mistake a letter. Untick what you don&apos;t want filled. Empty
                         boxes were not found; type them yourself.
@@ -225,6 +309,15 @@ function NidReader({ role, onClose, onFill }) {
                                         }}
                                         className={cn(!values[k] && "border-dashed")}
                                     />
+                                    <CheckNote
+                                        cloud={result.engine === "cloud" ? result.fields[k] : undefined}
+                                        other={check?.fields?.[k]}
+                                        done={!!check?.fields}
+                                        onUse={(v) => {
+                                            setValues((x) => ({ ...x, [k]: v }));
+                                            setUse((u) => ({ ...u, [k]: true }));
+                                        }}
+                                    />
                                 </label>
                             </div>
                         ))}
@@ -232,5 +325,24 @@ function NidReader({ role, onClose, onFill }) {
                 </div>
             )}
         </Modal>
+    );
+}
+
+/**
+ * Under a box filled by the cloud reader: does the offline reader agree? Agree → green tick (both read the same);
+ * differ → what the offline reader read, with a button to use it instead. Nothing when there is nothing to compare.
+ */
+function CheckNote({ cloud, other, done, onUse }) {
+    if (cloud === undefined || !done) return null;
+    if (cloud && other && same(cloud, other))
+        return <span className="block text-[11px] text-success">✓ Both readers read the same</span>;
+    if (!other) return cloud ? <span className="block text-[11px] text-subtle">Only the AI read this — check it</span> : null;
+    return (
+        <span className="flex flex-wrap items-center gap-1 text-[11px] text-warn">
+            {cloud ? "Readers differ — offline read:" : "Offline read:"} <span className="font-bangla text-ink-900">{other}</span>
+            <button type="button" onClick={() => onUse(other)} className="rounded px-1 font-medium text-brand-700 hover:bg-brand-50">
+                Use this
+            </button>
+        </span>
     );
 }

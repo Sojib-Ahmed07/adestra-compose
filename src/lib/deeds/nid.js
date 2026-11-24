@@ -7,9 +7,14 @@
 // 0° / 180°, or all four turns when no card was found) → read Bangla + English → on the smart card's back also read the
 // 3 machine lines (MRZ: NID number, date of birth, English name — very reliable) → nid-parse.js picks out the fields.
 // The result is shown to the staff to check before it goes into the deed.
+//
+// readNidCloud(): the "Best" reader — the same card pictures (found + flattened here) are sent through /api/nid-read to
+// the shop's Cloudflare Worker (a Workers AI vision model reads them); its answer goes through the same checks
+// (places list, machine-line check digits) before it is shown.
 import { findCardCorners, findTwoCards, warpQuad } from "@/lib/photo/card";
 import { loadImage, makeCanvas, srcH, srcW } from "@/lib/photo/image";
-import { mergeNid, parseNid } from "./nid-parse";
+import { addressLine, mergeAddress } from "./nid-address";
+import { fixName, mergeNid, parseMrz, parseNid } from "./nid-parse";
 
 const CARD_W = 2000; // px — the flattened card (≈ 590 dpi), big enough for the small Bangla letters
 const CARD_H = Math.round((CARD_W * 54) / 85.6);
@@ -341,6 +346,100 @@ const cardShaped = (q) => {
 };
 
 /**
+ * A scan / photocopy / PDF page (white paper around the cards): the blocks of print separated by white space. Much surer
+ * than looking for card edges, because a light card on white paper has hardly any edge. Returns the crops of 2 card-sized
+ * blocks (front and back: one above the other or side by side), or null when the page isn't like that.
+ */
+function scanPieces(img) {
+    const W = srcW(img);
+    const H = srcH(img);
+    // paper-shaped only (A4 1.41, Letter 1.29, Legal 1.65 — either way round); a phone screenshot is ~2.2 : 1
+    const pr = Math.max(W, H) / Math.min(W, H);
+    if (pr < 1.2 || pr > 1.75) return null;
+    const small = toCanvas(img, 900);
+    const w = small.width;
+    const h = small.height;
+    const d = small.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+    const ink = new Uint8Array(w * h); // 1 = not plain white paper
+    for (let i = 0, j = 0; i < d.length; i += 4, j++) {
+        const mn = Math.min(d[i], d[i + 1], d[i + 2]);
+        const mx = Math.max(d[i], d[i + 1], d[i + 2]);
+        ink[j] = mn < 225 || mx - mn > 22 ? 1 : 0;
+    }
+    // a page: the outer 3% all round is (almost) blank paper
+    const m = Math.max(2, Math.round(Math.min(w, h) * 0.03));
+    let border = 0;
+    let borderInk = 0;
+    for (let y = 0; y < h; y++)
+        for (let x = 0; x < w; x++)
+            if (x < m || y < m || x >= w - m || y >= h - m) {
+                border++;
+                borderInk += ink[y * w + x];
+            }
+    if (borderInk / border > 0.04) return null;
+    // runs of rows (or columns) with print, white gaps between them
+    const bands = (n, count, len) => {
+        const out = [];
+        let start = -1;
+        let gap = 0;
+        for (let i = 0; i <= n; i++) {
+            const on = i < n && count(i) > len * 0.03;
+            if (on) {
+                if (start < 0) start = i;
+                gap = 0;
+            } else if (start >= 0 && (++gap > n * 0.012 || i === n)) {
+                out.push([start, i - gap + 1]);
+                start = -1;
+                gap = 0;
+            }
+        }
+        return out.filter(([a, b]) => b - a > n * 0.04);
+    };
+    const rowCount = (x0, x1) => (y) => {
+        let c = 0;
+        for (let x = x0; x < x1; x++) c += ink[y * w + x];
+        return c;
+    };
+    const colCount = (y0, y1) => (x) => {
+        let c = 0;
+        for (let y = y0; y < y1; y++) c += ink[y * w + x];
+        return c;
+    };
+    const boxes = [];
+    for (const [y0, y1] of bands(h, rowCount(0, w), w)) {
+        const cols = bands(w, colCount(y0, y1), y1 - y0);
+        for (const [x0, x1] of cols) {
+            // tighten the rows to this block's own columns
+            const rows = bands(y1 - y0, (i) => rowCount(x0, x1)(y0 + i), x1 - x0);
+            if (!rows.length) continue;
+            boxes.push({ x0, x1, y0: y0 + rows[0][0], y1: y0 + rows[rows.length - 1][1] });
+        }
+    }
+    const cardLike = boxes.filter((b) => {
+        const bw = b.x1 - b.x0;
+        const bh = b.y1 - b.y0;
+        const r = Math.max(bw, bh) / Math.min(bw, bh);
+        return r > 1.3 && r < 1.95 && bw * bh > w * h * 0.03;
+    });
+    if (cardLike.length !== 2) return null;
+    const [a, b] = cardLike.map((x) => (x.x1 - x.x0) * (x.y1 - x.y0));
+    if (Math.min(a, b) / Math.max(a, b) < 0.6) return null;
+    const k = W / w;
+    const full = toCanvas(img, Math.max(W, H));
+    return cardLike.map((bx) => {
+        const pad = 0.02 * Math.max(bx.x1 - bx.x0, bx.y1 - bx.y0);
+        const x = Math.max(0, (bx.x0 - pad) * k);
+        const y = Math.max(0, (bx.y0 - pad) * k);
+        return cropTo(full, {
+            x,
+            y,
+            w: Math.min(W - x, (bx.x1 - bx.x0 + 2 * pad) * k),
+            h: Math.min(H - y, (bx.y1 - bx.y0 + 2 * pad) * k),
+        });
+    });
+}
+
+/**
  * The card(s) in a photo, flattened. A scan / photocopy / PDF page with both sides (front above back, or side by side)
  * gives two cards, read one after the other. When no card is found — a card that fills the photo, a faint photocopy —
  * the part of the page with print on it is read as it is.
@@ -348,6 +447,17 @@ const cardShaped = (q) => {
 function cardsIn(img) {
     const W = srcW(img);
     const H = srcH(img);
+    // a scan / PDF page with both sides on white paper
+    const scanned = scanPieces(img);
+    if (scanned) return { pieces: scanned.map((c) => ({ c, card: true })) };
+    // a photo with one card that fills a good part of it: that card (pages with two cards are handled above, and a page
+    // photographed with both cards has each well under a quarter of the picture)
+    const first = findCardCorners(img);
+    if (first.found && cardShaped(first.corners)) {
+        const { w, h } = quadSize(first.corners);
+        if (w * h > W * H * 0.25)
+            return { pieces: [{ c: warpQuad(img, grow(first.corners, 1.05, W, H), CARD_W, CARD_H), card: true }] };
+    }
     const two = findTwoCards(img);
     // two cards on one page: both clearly card-shaped (1.4–1.8 : 1 — half of a close-up card is ~1.26 : 1), about the same
     // size, and together well under the whole picture (a close-up card split in two halves fills it)
@@ -714,4 +824,106 @@ export async function readNid(files, onProgress) {
         texts.flatMap((t) => t.addr || []),
     );
     return { fields, found: Object.keys(fields).filter((k) => fields[k]), texts };
+}
+
+// ——— Best reader: Cloudflare Workers AI ———
+
+/** A picture → JPEG data URL, long side ≤ `long` px (small enough for the 4 MB request limit, big enough to read). */
+function jpegUrl(src, long = 1600) {
+    const c = toCanvas(src, long);
+    return c.toDataURL("image/jpeg", 0.86);
+}
+
+const BN_ONLY = (v) => {
+    const t = String(v || "")
+        .replace(/^\s*(?:নাম|পিতা|মাতা|স্বামী)\s*[:ঃ]?\s*/, "")
+        .replace(/[\u200C\u200D]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    // a name must be Bangla (the model sometimes answers in English or "N/A" when it can't read it)
+    const bn = (t.match(/[\u0980-\u09FF]/g) || []).length;
+    return bn && bn >= t.replace(/[\s.:]/g, "").length * 0.85 ? t : "";
+};
+
+/**
+ * The model's answer → the deed fields, checked: names Bangla only (common name words set right), NID 10 / 13 / 17
+ * digits — and the smart card's machine lines (check digits) win over the printed number / date when they check out,
+ * the address split into the 5 boxes and checked against the places list (nid-address.js).
+ */
+function cloudFields(data) {
+    const out = {};
+    for (const k of ["name", "father", "mother", "husband"]) {
+        const v = BN_ONLY(data[k]);
+        if (v) out[k] = fixName(v) || v;
+    }
+    const en = String(data.nameEn || "")
+        .replace(/[^A-Za-z.\s]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    if (en.length > 2) out.nameEn = en.toUpperCase();
+    const nid = String(data.nid || "")
+        .replace(/[০-৯]/g, (c) => "০১২৩৪৫৬৭৮৯".indexOf(c))
+        .replace(/\D/g, "");
+    if ([10, 13, 17].includes(nid.length)) out.nid = nid;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(data.dob || ""))) out.dob = data.dob;
+    const blood = /\b(A|B|AB|O)\s*[+-]/i.exec(String(data.blood || ""));
+    if (blood) out.blood = blood[0].replace(/\s/g, "").toUpperCase();
+    const mrz = parseMrz(String(data.mrz || ""));
+    if (mrz.nid) {
+        out.nid = mrz.nid;
+        out.nidChecked = true;
+    }
+    if (mrz.dob) out.dob = mrz.dob;
+    if (data.address) {
+        Object.assign(out, mergeAddress([String(data.address)]));
+        const line = addressLine(out);
+        if (line) out.addressLine = line;
+    }
+    return out;
+}
+
+/**
+ * The Best reader: card pictures → Cloudflare Workers AI → checked fields. Same answer shape as readNid().
+ * Throws when the cloud can't be used (the caller falls back to readNid()).
+ * @param {File[]} files
+ * @param {(label: string, done: number) => void} [onProgress]
+ */
+export async function readNidCloud(files, onProgress) {
+    onProgress?.("Finding the card", 0.1);
+    const pictures = [];
+    for (const f of [...files].slice(0, 3)) {
+        if (isPdf(f)) {
+            for (const page of await pdfPages(f)) for (const { c } of cardsIn(page).pieces) pictures.push(c);
+        } else {
+            const { img, url } = await loadImage(f);
+            try {
+                for (const { c } of cardsIn(img).pieces) pictures.push(c);
+            } finally {
+                URL.revokeObjectURL(url);
+            }
+        }
+    }
+    if (!pictures.length) throw new Error("no card picture");
+    const images = pictures.slice(0, 4).map((c) => jpegUrl(c));
+    onProgress?.("Reading with Cloudflare AI", 0.35);
+    const res = await fetch("/api/nid-read", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ images }),
+        signal: AbortSignal.timeout(65000),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || `error ${res.status}`);
+    onProgress?.("Checking", 0.95);
+    const fields = cloudFields(body.data || {});
+    onProgress?.("Done", 1);
+    return {
+        fields,
+        found: Object.keys(fields).filter((k) => fields[k]),
+        texts: pictures.slice(0, 4).map((c) => ({ preview: thumb(c) })),
+        engine: "cloud",
+        model: String(body.model || "")
+            .split("/")
+            .pop(),
+    };
 }
