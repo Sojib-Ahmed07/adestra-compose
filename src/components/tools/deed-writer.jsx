@@ -56,7 +56,7 @@ function DeedWriter() {
     const [tplId, setTplId] = useState(deedTemplates[0].id);
     const tpl = getTemplate(tplId);
     const [data, setData] = useState(() => emptyDeed(tpl, emptyPerson));
-    const [page, setPage] = useState({ ...defaultPageSettings, size: tpl.font });
+    const [page, setPage] = useState({ ...defaultPageSettings, size: tpl.font, ...tpl.page });
     const [loadedFor, setLoadedFor] = useState(null);
     const [people, setPeople] = useState([]);
     const [info, setInfo] = useState({ pages: 0, size: page.size });
@@ -64,7 +64,7 @@ function DeedWriter() {
     // Load the draft and page settings of the chosen template (kept in this browser).
     useEffect(() => {
         setData(normalizeDeed(tpl, read(DRAFT(tpl.id), null), emptyPerson));
-        setPage({ ...defaultPageSettings, size: tpl.font, ...read(PAGE(tpl.id), {}) });
+        setPage({ ...defaultPageSettings, size: tpl.font, ...tpl.page, ...read(PAGE(tpl.id), {}) });
         setPeople(read(PEOPLE, []).map((x) => ({ ...x, person: normalizePerson(x.person) })));
         setLoadedFor(tpl.id);
     }, [tpl]);
@@ -89,10 +89,11 @@ function DeedWriter() {
         const all = tpl.people.flatMap((p) => (p.multiple ? data[p.key] || [] : [data[p.key]]));
         for (const person of all) {
             if (!person?.name?.trim()) continue;
-            const id = `${person.name.trim()}|${(person.nid || "").trim()}`;
+            const id = `${person.name.trim()}|${(person.nid || person.birthReg || "").trim()}`;
             const at = list.findIndex((x) => x.id === id);
             if (at >= 0) list.splice(at, 1);
-            list.unshift({ id, person });
+            const { relation: _relation, ...saved } = person; // "স্ত্রী" belongs to this deed, not to the person
+            list.unshift({ id, person: saved });
         }
         const trimmed = list.slice(0, 80);
         write(PEOPLE, trimmed);
@@ -248,7 +249,7 @@ function PersonList({ role, list, onChange, people }) {
                         idPrefix={`${role.key}-${i}`}
                         value={person ?? emptyPerson()}
                         onChange={(patch) => onChange(list.map((x, j) => (j === i ? { ...x, ...patch } : x)))}
-                        onReplace={(p) => onChange(list.map((x, j) => (j === i ? { ...emptyPerson(), ...p } : x)))}
+                        onReplace={(p) => onChange(list.map((x, j) => (j === i ? { ...emptyPerson(), ...p, relation: x.relation } : x)))}
                         people={people}
                     />
                     <button
@@ -407,7 +408,8 @@ function PersonForm({ role, value, onChange, onReplace, people, idPrefix }) {
             </div>
             {open ? (
                 <div className="grid gap-3 border-t border-line p-3 sm:grid-cols-2">
-                    {field("name", "নাম", { wide: true })}
+                    {role.relation ? field("relation", "সম্পর্ক (যেমন স্ত্রী, ছেলে, ভাই) — না দিলে খালি") : null}
+                    {field("name", "নাম", { wide: !role.relation })}
                     {field("father", "পিতা")}
                     {field("mother", "মাতা")}
                     {field("husband", "স্বামী (থাকলে)")}
@@ -421,6 +423,7 @@ function PersonForm({ role, value, onChange, onReplace, people, idPrefix }) {
                     {field("nationality", "জাতীয়তা")}
                     {field("religion", "ধর্ম")}
                     {field("nid", "জাতীয় পরিচয় পত্র নং", { english: true })}
+                    {field("birthReg", "জন্ম নিবন্ধন নং (NID না থাকলে)", { english: true })}
                     {field("mobile", "মোবাইল নং", { english: true })}
                 </div>
             ) : null}
@@ -647,7 +650,7 @@ function PageSettings({ page, setPage, tpl }) {
                         onChange={(e) => set({ keepPages: e.target.checked })}
                     />
                     <div className="flex flex-wrap gap-2">
-                        <Button size="sm" variant="ghost" onClick={() => setPage({ ...defaultPageSettings, size: tpl.font })}>
+                        <Button size="sm" variant="ghost" onClick={() => setPage({ ...defaultPageSettings, size: tpl.font, ...tpl.page })}>
                             <RotateCcw className="h-4 w-4" /> Reset page settings
                         </Button>
                     </div>
@@ -659,4 +662,4 @@ function PageSettings({ page, setPage, tpl }) {
             ) : null}
         </div>
     );
-}
+}

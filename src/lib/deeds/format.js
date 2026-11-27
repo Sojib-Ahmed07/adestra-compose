@@ -71,6 +71,7 @@ export const personFields = [
     { key: "religion", label: "ধর্ম" },
     { key: "profession", label: "পেশা" },
     { key: "nid", label: "জাতীয় পরিচয় পত্র নং", digits: true },
+    { key: "birthReg", label: "জন্ম নিবন্ধন নং", digits: true }, // for someone without an NID (a son, a young person)
     { key: "mobile", label: "মোবাইল নং", digits: true },
 ];
 
@@ -165,6 +166,7 @@ export function personText(p = {}, { sep = "ঃ", namePrefix = false } = {}) {
     if (f("religion")) more.push(s("ধর্ম", f("religion")));
     if (f("profession")) more.push(s("পেশা", f("profession")));
     if (f("nid")) more.push(s("জাতীয় পরিচয় পত্র নং", d("nid")));
+    if (f("birthReg")) more.push(s("জন্ম নিবন্ধন নং", d("birthReg")));
     if (more.length) text += ` ${more.join(", ")}।`;
     if (f("mobile")) text += ` ${s("মোবাইল নং", d("mobile"))}।`;
     return text;
@@ -177,5 +179,20 @@ export const shortAddress = (p = {}) =>
         .filter((v, i, a) => v && a.indexOf(v) === i)
         .join(", ") || clean(p.address);
 
+/** A name without মোঃ / মোসাঃ / মোছাঃ / ডাঃ / মৃত in front ("মোঃ সেলিম মিয়া" → "সেলিম মিয়া"). */
+export const plainName = (p) => {
+    const n = clean(p?.name)
+        .replace(/^((মোঃ|মোহাঃ|মোসাঃ|মোছাঃ|মোসাম্মৎ|মোছাম্মৎ|মোহাম্মদ|মুহাম্মদ|ডাঃ|মৃত)\s*)+/, "")
+        .trim();
+    return n || nameOf(p);
+};
+
+/** Whose: "সেলিম মিয়া" → "সেলিম মিয়ার", "রজব আলী" → "রজব আলীর", "করিম" → "করিমের". */
+export const ofName = (name) => {
+    const n = clean(name);
+    if (!n || /\.$/.test(n)) return `${n} এর`;
+    return /[\u0985-\u0994\u09BE-\u09CCয়]$/.test(n) ? `${n}র` : `${n}ের`;
+};
+
 /** Short name for use inside sentences. */
-export const nameOf = (p) => clean(p?.name) || "............";
+export const nameOf = (p) => clean(p?.name) || "............";

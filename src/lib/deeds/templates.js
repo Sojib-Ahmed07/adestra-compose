@@ -1,9 +1,11 @@
 // src/lib/deeds/templates.js
 // The shop's own deed templates (from the owner's Word files, Nov 2026). Each template says:
 //   people  — the parties (১ম পক্ষ, ২য় পক্ষ, জামিনদার …), filled with the person form; multiple: true = a list
-//             (any number, e.g. জামিনদার), optional: true = may be left empty
+//             (any number, e.g. জামিনদার), optional: true = may be left empty, relation: true = a "সম্পর্ক" box
+//             (স্ত্রী, ছেলে …) printed in the label: "জামিনদার (স্ত্রী)"
 //   witnesses — how many সাক্ষী a new deed starts with (staff can add / remove; d.witnessList)
 //   fields  — the other details (amounts, dates, vehicle …)
+//   page    — optional page-setting defaults (e.g. { fitPages: 1 } for a one-sheet deed)
 //   texts   — the long paragraphs and the conditions, written from the fields; staff can change any of them
 //   blocks  — the whole deed as blocks for the page engine (components/deeds/deed-pages.jsx)
 // Wording follows the owner's files (a few obvious typing mistakes fixed). Amount words and dates are worked out.
@@ -17,7 +19,9 @@ import {
     moneyWords,
     nameOf,
     normalizePerson,
+    ofName,
     personText,
+    plainName,
     takaText,
     todayIso,
     two,
@@ -218,7 +222,7 @@ const moneyLend = {
     people: [
         { key: "giver", label: "১ম পক্ষ (দাতা)" },
         { key: "taker", label: "২য় পক্ষ (গ্রহিতা)" },
-        { key: "guarantors", label: "জামিনদার", optional: true, multiple: true },
+        { key: "guarantors", label: "জামিনদার", optional: true, multiple: true, relation: true },
     ],
     fields: [
         { key: "date", label: "তারিখ", type: "date", default: () => todayIso() },
@@ -268,18 +272,14 @@ const moneyLend = {
         const right = [
             { row: 0, label: "১ম পক্ষ দাতার স্বাক্ষর" },
             { row: 2, label: "২য় পক্ষ গ্রহিতার স্বাক্ষর" },
-            ...G.map((_, i) => ({ row: 4 + i * 2, label: many ? `${bn(i + 1)} নং জামিনদারের স্বাক্ষর` : "জামিনদারের স্বাক্ষর" })),
+            ...G.map((g, i) => ({ row: 4 + i * 2, label: guarantorSign(g, i, many) })),
         ];
         return [
             bismillah(),
             P("“হাওলাদনামা”", { align: "center", size: 1.25, bold: true, gap: 0.6 }),
             { t: "party", text: personText(d.giver, { sep: ":", namePrefix: true }), label: "১ম পক্ষ দাতা" },
             { t: "party", text: personText(d.taker, { sep: ":", namePrefix: true }), label: "২য় পক্ষ গ্রহিতা" },
-            ...G.map((g, i) => ({
-                t: "party",
-                text: personText(g, { sep: ":", namePrefix: true }),
-                label: many ? `জামিনদার-${bn(i + 1)}` : "জামিনদার",
-            })),
+            ...G.map((g, i) => ({ t: "party", text: personText(g, { sep: ":", namePrefix: true }), label: guarantorLabel(g, i, many) })),
             P(T.intro, { gap: 0.5 }),
             { t: "break" },
             P("শর্তাবলী", { align: "center", size: 1.25, bold: true, underline: true, keep: true, gap: 0.4 }),
@@ -287,6 +287,76 @@ const moneyLend = {
             { t: "break" },
             P(T.closing, { gap: 1 }),
             { t: "sign", title: "সাক্ষীগণের স্বাক্ষরঃ", witnesses: witnessesOf(d), right },
+        ];
+    },
+};
+
+/** "জামিনদার (স্ত্রী)" when the relation is given, else "জামিনদার" / "জামিনদার-২". */
+function guarantorLabel(g, i, many) {
+    const rel = String(g?.relation || "").trim();
+    if (rel) return `জামিনদার (${rel})`;
+    return many ? `জামিনদার-${bn(i + 1)}` : "জামিনদার";
+}
+
+/** "জামিনদারের (স্ত্রী) স্বাক্ষর", "২ নং জামিনদারের স্বাক্ষর", "জামিনদারের স্বাক্ষর" */
+function guarantorSign(g, i, many) {
+    const rel = String(g?.relation || "").trim();
+    const who = rel ? `জামিনদারের (${rel})` : many ? `${bn(i + 1)} নং জামিনদারের` : "জামিনদারের";
+    return `${who} স্বাক্ষর`;
+}
+
+// ——— 2b. Money lending, 1 sheet (হাওলাদনামা ১ পাতা, from the owner's file, 27 Nov 2026) ———
+
+const moneyLendShort = {
+    id: "money-lend-1",
+    title: "হাওলাদনামা (১ পাতা)",
+    hint: "ছোট হাওলাদনামা — দাতা, গ্রহিতা, জামিনদার (স্ত্রী, ছেলে…), টাকা, মাসিক লভ্যাংশ",
+    font: 14,
+    page: { fitPages: 1 }, // one stamp sheet: the font shrinks a little when it doesn't fit
+    witnesses: 2,
+    people: [
+        { key: "giver", label: "১ম পক্ষ (দাতা)" },
+        { key: "taker", label: "২য় পক্ষ (গ্রহিতা)" },
+        { key: "guarantors", label: "জামিনদার", optional: true, multiple: true, relation: true },
+    ],
+    fields: [
+        { key: "date", label: "তারিখ", type: "date", default: () => todayIso() },
+        { key: "amount", label: "হাওলাতের টাকা", type: "money", default: "" },
+        { key: "profit", label: "প্রতি মাসে লভ্যাংশ (টাকা) — না থাকলে খালি", type: "money", default: "" },
+    ],
+    texts(d) {
+        const profit = money(d.profit) ? `প্রতি মাসে লভ্যাংশের পরিমাণ ${takaText(d.profit)} জানিয়া, ` : "";
+        return [
+            {
+                id: "main",
+                label: "মূল অংশ",
+                text: `আমি ${nameOf(d.taker)} ${bnDate(d.date)} ইং তারিখে ${ofName(plainName(d.giver))} কাছ হইতে ${profit}${takaText(d.amount)} হাওলাত লইলাম।`,
+            },
+        ];
+    },
+    blocks(d, T) {
+        const G = guarantorsOf(d);
+        const many = G.length > 1;
+        const party = (p) => personText(p, { sep: ":", namePrefix: true });
+        return [
+            bismillah(),
+            P("“হাওলাদনামা”", { align: "center", size: 1.25, bold: true, gap: 0.6 }),
+            { t: "party", text: party(d.giver), label: "১ম পক্ষ দাতা" },
+            { t: "party", text: party(d.taker), label: "২য় পক্ষ গ্রহিতা" },
+            ...G.map((g, i) => ({ t: "party", text: party(g), label: guarantorLabel(g, i, many) })),
+            P(T.main, { gap: T.clauses.length ? 0.3 : 0.8 }),
+            // conditions the staff added (none in the owner's file)
+            ...T.clauses.map((text, i) => ({ t: "clause", n: i + 1, text })),
+            {
+                t: "sign",
+                title: "সাক্ষীগণের স্বাক্ষরঃ",
+                witnesses: witnessesOf(d),
+                right: [
+                    { row: 0, label: "১ম পক্ষ দাতার স্বাক্ষর" },
+                    { row: 1, label: "২য় পক্ষ গ্রহিতার স্বাক্ষর" },
+                    ...G.map((g, i) => ({ row: 2 + i, label: guarantorSign(g, i, many) })),
+                ],
+            },
         ];
     },
 };
@@ -458,7 +528,7 @@ const vehicleSaleShort = {
     },
 };
 
-export const deedTemplates = [officeRent, moneyLend, vehicleSale, vehicleSaleShort];
+export const deedTemplates = [officeRent, moneyLend, moneyLendShort, vehicleSale, vehicleSaleShort];
 export const getTemplate = (id) => deedTemplates.find((t) => t.id === id);
 
 /** A fresh form for a template. */
@@ -522,4 +592,4 @@ export function resolveTexts(tpl, d) {
 export function buildDeed(tpl, d, ctx = { pages: 1 }) {
     const T = resolveTexts(tpl, d);
     return tpl.blocks(d, { ...T.byId, clauses: T.clauses }, ctx);
-}
+}

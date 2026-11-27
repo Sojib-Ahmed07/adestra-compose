@@ -7,7 +7,7 @@
 > create or change, list any `npm install` / `db:push` / env changes, and ask for the current contents of any file you need
 > to edit that you haven't been shown. **Never guess what an existing file contains.**
 
-Last updated: **24 Nov 2026 (3)** — Joint photo rebuilt simple (2 sizes, blend slider, no effects, no overlap). Earlier today: Best NID reader (Cloudflare Workers AI, free) + offline double-check. Earlier: NID reader: scan / PDF pages split by white space; label-line junk and খান fixed. 23 Nov: NID reader tested on the owner's real cards; scans / PDF pages with both sides; Tools trimmed (PDF, Bangla typing, calculators, image resize, page arranger, job photo and shop accounts removed); address back to 5 boxes; NID address checked against Bangladesh's places list; order presets in Passport photo sheet.
+Last updated: **27 Nov 2026 (2)** — NID box: empty boxes after the AI reading are filled from the offline double-check. Earlier today: deed writer: one-page হাওলাদনামা, জামিনদার সম্পর্ক (স্ত্রী / ছেলে), জন্ম নিবন্ধন নং. Before: **24 Nov 2026 (3)** — Joint photo rebuilt simple (2 sizes, blend slider, no effects, no overlap). Earlier today: Best NID reader (Cloudflare Workers AI, free) + offline double-check. Earlier: NID reader: scan / PDF pages split by white space; label-line junk and খান fixed. 23 Nov: NID reader tested on the owner's real cards; scans / PDF pages with both sides; Tools trimmed (PDF, Bangla typing, calculators, image resize, page arranger, job photo and shop accounts removed); address back to 5 boxes; NID address checked against Bangladesh's places list; order presets in Passport photo sheet.
 
 ---
 
@@ -241,7 +241,13 @@ npm run format                    # Prettier (printWidth 130)
     writes one party like the owner's deeds and leaves out empty parts.
   - `src/lib/deeds/templates.js` — the owner's 4 templates as data: office-rent (অফিস/দোকান ভাড়া), money-lend (হাওলাদনামা,
     any number of জামিনদার — people entry `multiple: true` → `d.guarantors[]`), vehicle-sale (পুরাতন অটো-রিক্সা বিক্রয়, ৩ ফর্দ, "N (words) ফর্দে" counts the real sheets),
-    vehicle-sale-1 (১ পাতা). Each = `{ id, title, hint, font, witnesses (default count), people[], fields[], texts(d),
+    vehicle-sale-1 (১ পাতা), money-lend-1 (হাওলাদনামা ১ পাতা, 27 Nov, from the owner's PDF: parties + any number of
+    জামিনদার, one editable sentence "আমি … তারিখে …র কাছ হইতে প্রতি মাসে লভ্যাংশের পরিমাণ … জানিয়া, … হাওলাত লইলাম।"
+    (লভ্যাংশ optional), added conditions printed numbered, witnesses (default 2) + a signature line for every party and
+    জামিনদার; `page: { fitPages: 1 }`). Template `page` = page-setting defaults (applied under the saved settings).
+    People option `relation: true` (both হাওলাদনামা) = a "সম্পর্ক" box → label "জামিনদার (স্ত্রী)", signature
+    "জামিনদারের (স্ত্রী) স্বাক্ষর"; relation is not kept in saved people. `format.js`: `birthReg` (জন্ম নিবন্ধন নং, printed
+    after the NID), `plainName` (drops মোঃ / মোসাঃ …), `ofName` (সেলিম মিয়া → মিয়ার, করিম → করিমের). Each = `{ id, title, hint, font, witnesses (default count), people[], fields[], texts(d),
     blocks(d, T, ctx) }`. people: `optional`, `multiple` (a list, form = `PersonList`). **Witnesses** on every template:
     `d.witnessList = [{ name, address }]` (count = length, 1–12; empty = blank dotted line; name/address printed under the
     line); `witnessesOf(d)`, `emptyWitness`. `normalizeDeed(tpl, saved, emptyPerson)` loads a draft and converts drafts from
@@ -379,6 +385,11 @@ npm run format                    # Prettier (printWidth 130)
     double-click at the pointer, drag to pan, turn ¼), right = the boxes. Previews (`thumb`) are now 1800 px JPEG q0.85 so
     the small Bangla print is readable when zoomed. First real cloud test (Fahima): AI read ফাহিমা, card says ফাইমা — the
     offline check flagged it.
+    **(27 Nov)** a box the AI left empty (typically the address: no address, or one that failed the places check) is filled
+    from the offline double-check when it finishes (`readNid(...).then`: only empty boxes, never one with text); the note
+    under it says "The AI left this empty — filled from the offline reader". Before, `CheckNote` showed nothing for boxes the
+    AI didn't fill, so a clear card (owner's Nipun card, old laminated) came back with no address in Best mode while the
+    offline reader read it fully.
   - `components/tools/deed-writer.jsx` — template cards, people (each party; "NID থেকে পূরণ"; জামিনদার add / remove; "আগের মানুষ থেকে পূরণ" from `deed:people`, the
     last 80 people saved when printing), details, সাক্ষী card (count, optional name / address, fill from a saved person), wording/conditions editor, page settings (per template, `deed:page:<id>`),
     draft per template (`deed:draft:<id>`), Print (waits 350 ms so the last Banglish word converts).
@@ -551,6 +562,8 @@ Schema change → edit `schema.js`, tell the owner to run `npm run db:push`, upd
 
 | Date | Change | Next |
 | --- | --- | --- |
+| 2026-11-27 | **NID box: address no longer missing in Best mode.** When the Cloudflare AI gives no address (or one that fails the places check), the offline double-check's reading now fills the empty boxes by itself, with a note "The AI left this empty — filled from the offline reader". Boxes the AI filled are not changed (differences still show "Use this"). The owner's clear old card (Nipun, রাজফুলবাড়িয়া) now fills গ্রাম, ডাকঘর, থানা, জেলা. No new packages, no DB change. | — |
+| 2026-11-27 | **One-page হাওলাদনামা** (from the owner's PDF). New deed template: ১ম পক্ষ দাতা, ২য় পক্ষ গ্রহিতা, any number of জামিনদার, then "আমি … তারিখে …র কাছ হইতে প্রতি মাসে লভ্যাংশের পরিমাণ … জানিয়া, … হাওলাত লইলাম।" (লভ্যাংশ can be left empty; amounts with words; editable), optional extra conditions, witnesses (default 2) and a signature line for every party and জামিনদার. Fits one stamp sheet by default (font shrinks a little if needed). Both হাওলাদনামা: each জামিনদার has a **সম্পর্ক** box (স্ত্রী, ছেলে…) printed as "জামিনদার (স্ত্রী)". Every person: new **জন্ম নিবন্ধন নং** box (for someone without an NID). No new packages, no DB change. | More deed templates |
 | 2026-11-24 | **Joint photo rebuilt simple.** Two sizes: **Original 2.5 × 1.9 in** (3 in a row on A4) and **Passport size** (turned, 5 in a row). Each person sits in their own part — no overlap. Size/position per person with the crop editor. One **Blend in the middle** slider (0 = straight line). All extra effects removed (auto cut-out, background, touch-up, closeness, blur). No new packages, no DB change. | Owner tries on real couple photos |
 | 2026-11-24 | **NID box: big card viewer.** After reading, the box fills the screen: the card picture on the left (switch front / back, zoom in up to 5× with buttons, Ctrl+scroll or double-click, drag to move, turn), the boxes on the right, so staff compare each box with the card. Card pictures are kept sharp enough to zoom. Works for photos, scans and PDFs; on phones the picture sits above the boxes. No new packages, no DB change. | — |
 | 2026-11-24 | **Best NID reader (Cloudflare AI, free).** The NID box has "Best (Cloudflare AI) / Offline": Best sends the card pictures to the shop's own Cloudflare Worker, where a vision AI (Llama 4 Scout, then Gemma 3 12B / Mistral Small if needed) reads them; nothing is kept and it isn't used for training. Its answer goes through the same checks (places list, machine-line check digits), then the offline reader reads the same card and each box says whether both readers agree (or shows the other reading with "Use this"). Free ≈ 80–100 cards a day; past that, or if anything fails, the card is read offline. **Setup: Workers AI binding `AI` on the Worker + paste the new Worker code** (no new Vercel env). No new packages, no DB change. | Owner sets up and tests Bangla accuracy on real cards |

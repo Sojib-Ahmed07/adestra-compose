@@ -128,7 +128,23 @@ function NidReader({ role, onClose, onFill }) {
                     setCheck({ label: "Starting" });
                     mod
                         .readNid(files, (label) => alive.current && setCheck((c) => (c?.fields ? c : { label })))
-                        .then((o) => alive.current && setCheck({ fields: o.fields }))
+                        .then((o) => {
+                            if (!alive.current) return;
+                            // a box the AI left empty gets what the offline reader read (often the address: the AI
+                            // misses it or gives one that fails the places check) — boxes with text are never changed
+                            const empty = (x, k) => !String(x[k] ?? "").trim();
+                            setValues((x) => {
+                                const n = { ...x };
+                                for (const k of nidPersonKeys) if (empty(x, k) && o.fields[k]) n[k] = o.fields[k];
+                                return n;
+                            });
+                            setUse((u) => {
+                                const n = { ...u };
+                                for (const k of nidPersonKeys) if (!u[k] && o.fields[k]) n[k] = true;
+                                return n;
+                            });
+                            setCheck({ fields: o.fields });
+                        })
                         .catch(() => alive.current && setCheck({ failed: true }));
                     return;
                 }
@@ -306,7 +322,7 @@ function NidReader({ role, onClose, onFill }) {
                                             className={cn(!values[k] && "border-dashed")}
                                         />
                                         <CheckNote
-                                            cloud={result.engine === "cloud" ? result.fields[k] : undefined}
+                                            cloud={result.engine === "cloud" ? result.fields[k] || "" : undefined}
                                             other={check?.fields?.[k]}
                                             done={!!check?.fields}
                                             onUse={(v) => {
@@ -334,9 +350,10 @@ function CheckNote({ cloud, other, done, onUse }) {
     if (cloud && other && same(cloud, other))
         return <span className="block text-[11px] text-success">✓ Both readers read the same</span>;
     if (!other) return cloud ? <span className="block text-[11px] text-subtle">Only the AI read this — check it</span> : null;
+    if (!cloud) return <span className="block text-[11px] text-subtle">The AI left this empty — filled from the offline reader</span>;
     return (
         <span className="flex flex-wrap items-center gap-1 text-[11px] text-warn">
-            {cloud ? "Readers differ — offline read:" : "Offline read:"} <span className="font-bangla text-ink-900">{other}</span>
+            Readers differ — offline read: <span className="font-bangla text-ink-900">{other}</span>
             <button type="button" onClick={() => onUse(other)} className="rounded px-1 font-medium text-brand-700 hover:bg-brand-50">
                 Use this
             </button>
@@ -468,4 +485,4 @@ function CardViewer({ pictures }) {
             </p>
         </div>
     );
-}
+}
